@@ -1,0 +1,22 @@
+[package]
+name = "and-diary-android"
+version = "0.1.0"
+edition = "2024"
+license = "PolyForm-Noncommercial-1.0.0"
+publish = false
+
+[lib]
+name = "and_diary"
+crate-type = ["cdylib"]
+
+[dependencies]
+chrono = "0.4"
+
+[target.'cfg(target_os = "android")'.dependencies]
+android-activity = { version = "0.6", features = ["native-activity"] }
+gpui = { package = "gpui-pre", version = "=0.3.6", default-features = false }
+gpui-mobile = { git = "https://github.com/itsbalamurali/gpui-mobile", rev = "5fd54f4554263ae06753e90472c7f2e2ff5d7495", default-features = false }
+jni = "0.22"
+
+[profile.release]
+strip = "debuginfo"

@@ -1,0 +1,13 @@
+<resources>
+    <string name="app_name">Diary</string>
+    <string name="pen">Pen</string>
+    <string name="brush">Brush</string>
+    <string name="finger_ink">Finger ink</string>
+    <string name="undo">Undo</string>
+    <string name="writing_paper">Writing paper</string>
+    <string name="clear_day">Clear day</string>
+    <string name="clear_day_message">Delete all writing on this date? This cannot be undone.</string>
+    <string name="ink_empty">This day is already empty.</string>
+    <string name="ink_load_failed">This diary entry could not be loaded.</string>
+    <string name="ink_save_failed">This change could not be saved.</string>
+</resources>

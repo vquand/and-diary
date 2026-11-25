@@ -1,0 +1,12 @@
+<resources>
+    <style name="DiaryTheme" parent="android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:colorAccent">#984631</item>
+        <item name="android:colorControlNormal">#736C60</item>
+        <item name="android:textColorPrimary">@color/diary_text</item>
+        <item name="android:colorBackground">#F8F3E8</item>
+        <item name="android:colorButtonNormal">#EEE5D5</item>
+        <item name="android:navigationBarColor">#F8F3E8</item>
+        <item name="android:statusBarColor">#F8F3E8</item>
+        <item name="android:windowLightStatusBar">true</item>
+    </style>
+</resources>
