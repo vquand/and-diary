@@ -22,8 +22,21 @@ static STICKERS: LazyLock<[Arc<Image>; 13]> = LazyLock::new(|| {
     bytes.map(|data| Arc::new(Image::from_bytes(ImageFormat::Png, data.to_vec())))
 });
 
+static HANZI_BADGE: LazyLock<Arc<Image>> = LazyLock::new(|| {
+    Arc::new(Image::from_bytes(
+        ImageFormat::Png,
+        include_bytes!("../assets/stickers/hanzi_done.png").to_vec(),
+    ))
+});
+
 pub fn symbol(pin: Pin) -> Div {
     div()
         .size(px(24.))
         .child(img(STICKERS[pin as usize - 1].clone()).size(px(24.)))
+}
+
+pub fn hanzi_badge() -> Div {
+    div()
+        .size(px(20.))
+        .child(img(HANZI_BADGE.clone()).size(px(20.)))
 }

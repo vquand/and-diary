@@ -2,11 +2,13 @@ use crate::{
     calendar,
     calendar_view::{self, DateAction, PinAction},
     pins::{self, Pin},
+    settings::{self, AppSettings, DateFormat, Palette, ThemeMode},
+    settings_view::{self, SettingsAction},
 };
-use chrono::{Local, NaiveDate};
+use chrono::{Datelike, Local, NaiveDate};
 use gpui::{
-    App, Application, Context, IntoElement, Render, ScrollStrategy, UniformListScrollHandle,
-    Window, WindowOptions, div, prelude::*, px, rgb,
+    App, Application, Context, HitboxBehavior, IntoElement, LongPressEvent, Render, ScrollStrategy,
+    TouchPhase, UniformListScrollHandle, Window, WindowOptions, canvas, div, prelude::*, px, rgb,
 };
 use gpui_mobile::{
     android::{jni as android_jni, platform_view::AndroidPlatformViewFactory},
@@ -21,7 +23,10 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     path::PathBuf,
     rc::Rc,
+    sync::Mutex,
 };
+
+static PENDING_DATE: Mutex<Option<NaiveDate>> = Mutex::new(None);
 
 const INK_VIEW: &str = "diary_ink";
 const HEADER_HEIGHT: f32 = 56.;
@@ -29,15 +34,22 @@ const HEADER_HEIGHT: f32 = 56.;
 struct DaySheet {
     date: NaiveDate,
     ink: ManagedPlatformView,
+    scrub_down_x: Option<f32>,
+    scrub_active: bool,
 }
 
 struct Diary {
     entry: Option<DaySheet>,
+    return_date: Option<NaiveDate>,
+    show_settings: bool,
     directory: PathBuf,
     saved_days: Rc<BTreeSet<NaiveDate>>,
+    hanzi_days: Rc<BTreeSet<NaiveDate>>,
     pins: Rc<BTreeMap<NaiveDate, Pin>>,
     pin_directory: PathBuf,
     pin_picker: Option<(NaiveDate, bool)>,
+    settings_path: PathBuf,
+    settings: AppSettings,
     scroll: UniformListScrollHandle,
     today: NaiveDate,
 }
@@ -46,16 +58,24 @@ impl Diary {
     fn new(files: PathBuf) -> Self {
         let directory = files.join("entries");
         let pin_directory = files.join("pins");
+        let settings_path = files.join("settings.txt");
+        let settings = settings::load(&settings_path);
+        apply_android_settings(settings);
         let today = Local::now().date_naive();
         let scroll = UniformListScrollHandle::new();
         scroll.scroll_to_item_strict(calendar::month_index(today), ScrollStrategy::Center);
         Self {
             entry: None,
+            return_date: None,
+            show_settings: false,
             saved_days: Rc::new(calendar::saved_days(&directory)),
+            hanzi_days: Rc::new(calendar::completed_hanzi_days(&directory)),
             directory,
             pins: Rc::new(pins::load(&pin_directory)),
             pin_directory,
             pin_picker: None,
+            settings_path,
+            settings,
             scroll,
             today,
         }
@@ -63,8 +83,64 @@ impl Diary {
 
     fn calendar(&mut self, cx: &mut Context<Self>) {
         self.entry = None;
+        self.return_date = None;
+        self.show_settings = false;
         self.saved_days = Rc::new(calendar::saved_days(&self.directory));
+        self.hanzi_days = Rc::new(calendar::completed_hanzi_days(&self.directory));
         self.today = Local::now().date_naive();
+        cx.notify();
+    }
+
+    fn open_day(&mut self, date: NaiveDate, cx: &mut Context<Self>) {
+        self.show_settings = false;
+        self.return_date = None;
+        self.entry = Some(DaySheet {
+            date,
+            ink: ManagedPlatformView::new(INK_VIEW).with_param("date", date.to_string()),
+            scrub_down_x: None,
+            scrub_active: false,
+        });
+        cx.notify();
+    }
+
+    fn navigate_day(&mut self, date: NaiveDate, cx: &mut Context<Self>) {
+        if let Some(entry) = &mut self.entry {
+            if entry.date == date {
+                return;
+            }
+            entry.date = date;
+            switch_android_day(date);
+            cx.notify();
+        } else {
+            self.open_day(date, cx);
+        }
+    }
+
+    fn open_settings(&mut self, cx: &mut Context<Self>) {
+        self.return_date = self.entry.as_ref().map(|entry| entry.date);
+        self.entry = None;
+        self.pin_picker = None;
+        self.show_settings = true;
+        cx.notify();
+    }
+
+    fn close_settings(&mut self, cx: &mut Context<Self>) {
+        self.show_settings = false;
+        if let Some(date) = self.return_date.take() {
+            self.open_day(date, cx);
+        } else {
+            cx.notify();
+        }
+    }
+
+    fn update_settings(&mut self, action: SettingsAction, cx: &mut Context<Self>) {
+        match action {
+            SettingsAction::SetTheme(theme) => self.settings.theme = theme,
+            SettingsAction::SetToolbar(toolbar) => self.settings.toolbar = toolbar,
+            SettingsAction::SetDateFormat(date_format) => self.settings.date_format = date_format,
+        }
+        let _ = settings::save(&self.settings_path, self.settings);
+        apply_android_settings(self.settings);
         cx.notify();
     }
 
@@ -89,6 +165,12 @@ impl Diary {
 
 impl Render for Diary {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if let Some(synced) = PENDING_DATE.lock().ok().and_then(|mut guard| guard.take())
+            && let Some(entry) = &mut self.entry
+        {
+            entry.date = synced;
+        }
+
         let [left, top, right, bottom] = android_jni::platform()
             .and_then(|platform| platform.primary_window())
             .map(|window| {
@@ -104,6 +186,13 @@ impl Render for Diary {
             })
             .unwrap_or_default();
 
+        let system_dark = if self.settings.theme == ThemeMode::Auto {
+            is_system_dark_mode()
+        } else {
+            false
+        };
+        let palette = Palette::resolve(self.settings.theme, system_dark);
+
         let header = div()
             .h(px(HEADER_HEIGHT))
             .flex_shrink_0()
@@ -113,7 +202,7 @@ impl Render for Diary {
             .gap(px(12.))
             .px(px(16.))
             .border_b_1()
-            .border_color(rgb(calendar_view::RULE));
+            .border_color(rgb(palette.rule));
 
         let root = div()
             .size_full()
@@ -124,18 +213,22 @@ impl Render for Diary {
             .pb(px(bottom))
             .pl(px(left))
             .pr(px(right))
-            .bg(rgb(calendar_view::PAPER))
-            .text_color(rgb(calendar_view::TEXT));
+            .bg(rgb(palette.paper))
+            .text_color(rgb(palette.text));
 
-        if let Some(entry) = &mut self.entry {
-            let selected_date = entry.date;
-            let date = entry.date.format("%a, %b %-d, %Y").to_string();
+        if self.show_settings {
+            let back_label = if self.return_date.is_some() {
+                "‹ Diary"
+            } else {
+                "‹ Calendar"
+            };
+            let diary = cx.entity().downgrade();
             return root
                 .child(
                     header
                         .child(
-                            header_button("calendar", "‹ Calendar")
-                                .on_click(cx.listener(|diary, _, _, cx| diary.calendar(cx))),
+                            header_button("settings-back", back_label, palette)
+                                .on_click(cx.listener(|diary, _, _, cx| diary.close_settings(cx))),
                         )
                         .child(
                             div()
@@ -145,82 +238,282 @@ impl Render for Diary {
                                 .text_center()
                                 .text_sm()
                                 .font_weight(gpui::FontWeight::SEMIBOLD)
-                                .child(date),
+                                .child("Settings"),
+                        )
+                        .child(div().w(px(84.)).flex_shrink_0()),
+                )
+                .child(settings_view::settings_page(
+                    self.settings,
+                    palette,
+                    move |action, _, app| {
+                        let _ = diary.update(app, |diary, cx| {
+                            diary.update_settings(action, cx);
+                        });
+                    },
+                ));
+        }
+
+        if let Some(entry) = &mut self.entry {
+            let current_date = entry.date;
+            let date = format_day_header(current_date, self.settings.date_format);
+            let scrub_diary = cx.entity().downgrade();
+            return root
+                .child(
+                    header
+                        .child(
+                            header_button("calendar", "‹ Calendar", palette)
+                                .on_click(cx.listener(|diary, _, _, cx| diary.calendar(cx))),
                         )
                         .child(
-                            header_button("clear-day", "Clear day")
-                                .text_color(rgb(0x9b3a32))
-                                .on_click(move |_, _, _| confirm_clear_day(selected_date)),
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .gap(px(10.))
+                                .child(
+                                    day_nav_button("prev-day", "‹", palette).on_click(
+                                        cx.listener(move |diary, _, _, cx| {
+                                            if let Some(prev) = current_date.pred_opt() {
+                                                diary.navigate_day(prev, cx);
+                                            }
+                                        }),
+                                    ),
+                                )
+                                .child(
+                                    div()
+                                        .id("day-date-pill")
+                                        .relative()
+                                        .h(px(40.))
+                                        .px(px(12.))
+                                        .flex_shrink_0()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .rounded_md()
+                                        .cursor_pointer()
+                                        .active(move |style| style.bg(rgb(palette.wash)))
+                                        .text_center()
+                                        .text_size(px(15.))
+                                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                                        .child(date)
+                                        .child(
+                                            canvas(
+                                                |bounds, window, _| {
+                                                    window.insert_hitbox(
+                                                        bounds,
+                                                        HitboxBehavior::Normal,
+                                                    )
+                                                },
+                                                move |_, hitbox, window, _| {
+                                                    let hold_diary = scrub_diary.clone();
+                                                    window.on_mouse_event(
+                                                        move |event: &LongPressEvent,
+                                                              phase,
+                                                              window,
+                                                              app| {
+                                                            if !phase.bubble() {
+                                                                return;
+                                                            }
+                                                            let x = event.position.x.as_f32();
+                                                            match event.phase {
+                                                                TouchPhase::Started => {
+                                                                    if hitbox.is_hovered(window)
+                                                                        && !window
+                                                                            .default_prevented()
+                                                                    {
+                                                                        window.prevent_default();
+                                                                        app.stop_propagation();
+                                                                        let _ = hold_diary.update(
+                                                                            app,
+                                                                            |diary, _| {
+                                                                                if let Some(entry) =
+                                                                                    &mut diary.entry
+                                                                                    && !entry.scrub_active
+                                                                                {
+                                                                                    entry.scrub_down_x =
+                                                                                        Some(x);
+                                                                                    entry.scrub_active =
+                                                                                        true;
+                                                                                    begin_header_scrub();
+                                                                                }
+                                                                            },
+                                                                        );
+                                                                    }
+                                                                }
+                                                                TouchPhase::Moved => {
+                                                                    let _ = hold_diary.update(
+                                                                        app,
+                                                                        |diary, _| {
+                                                                            if let Some(entry) =
+                                                                                &mut diary.entry
+                                                                                && entry.scrub_active
+                                                                                && let Some(down_x) =
+                                                                                    entry.scrub_down_x
+                                                                            {
+                                                                                window.prevent_default();
+                                                                                update_header_scrub(
+                                                                                    x - down_x,
+                                                                                );
+                                                                            }
+                                                                        },
+                                                                    );
+                                                                }
+                                                                TouchPhase::Ended
+                                                                | TouchPhase::Cancelled => {
+                                                                    let canceled = event.phase
+                                                                        == TouchPhase::Cancelled;
+                                                                    let _ = hold_diary.update(
+                                                                        app,
+                                                                        |diary, _| {
+                                                                            if let Some(entry) =
+                                                                                &mut diary.entry
+                                                                                && entry.scrub_active
+                                                                            {
+                                                                                window.prevent_default();
+                                                                                entry.scrub_down_x =
+                                                                                    None;
+                                                                                entry.scrub_active =
+                                                                                    false;
+                                                                                end_header_scrub(
+                                                                                    canceled,
+                                                                                );
+                                                                            }
+                                                                        },
+                                                                    );
+                                                                }
+                                                            }
+                                                        },
+                                                    );
+                                                },
+                                            )
+                                            .absolute()
+                                            .inset_0(),
+                                        ),
+                                )
+                                .child(
+                                    day_nav_button("next-day", "›", palette).on_click(
+                                        cx.listener(move |diary, _, _, cx| {
+                                            if let Some(next) = current_date.succ_opt() {
+                                                diary.navigate_day(next, cx);
+                                            }
+                                        }),
+                                    ),
+                                ),
+                        )
+                        .child(
+                            header_button("day-settings", "Settings", palette)
+                                .on_click(cx.listener(|diary, _, _, cx| diary.open_settings(cx))),
                         ),
                 )
                 .child(entry.ink.render().w_full().flex_1().min_h_0());
         }
 
         let diary = cx.entity().downgrade();
-        root.bg(rgb(calendar_view::PAPER))
-            .child(
-                header
-                    .child(
-                        div()
-                            .relative()
-                            .font_family("Noto Serif")
-                            .text_size(px(25.))
-                            .child("Diary")
-                            .child(
-                                calendar_view::brush_rule(calendar_view::TEXT)
-                                    .absolute()
-                                    .bottom(px(-3.))
-                                    .left_0(),
-                            ),
-                    )
-                    .child(header_button("today", "Today").on_click(cx.listener(
-                        |diary, _, _, cx| {
-                            diary.today = Local::now().date_naive();
-                            diary.scroll.scroll_to_item_strict(
-                                calendar::month_index(diary.today),
-                                ScrollStrategy::Center,
-                            );
+        root.child(
+            header
+                .child(
+                    div()
+                        .relative()
+                        .font_family("Noto Serif")
+                        .text_size(px(25.))
+                        .child("Diary")
+                        .child(
+                            calendar_view::brush_rule(palette.text)
+                                .absolute()
+                                .bottom(px(-3.))
+                                .left_0(),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(4.))
+                        .child(header_button("today", "Today", palette).on_click(cx.listener(
+                            |diary, _, _, cx| {
+                                diary.today = Local::now().date_naive();
+                                diary.scroll.scroll_to_item_strict(
+                                    calendar::month_index(diary.today),
+                                    ScrollStrategy::Center,
+                                );
+                                cx.notify();
+                            },
+                        )))
+                        .child(
+                            header_button("settings", "Settings", palette)
+                                .on_click(cx.listener(|diary, _, _, cx| diary.open_settings(cx))),
+                        ),
+                ),
+        )
+        .child(calendar_view::months(
+            self.today,
+            self.saved_days.clone(),
+            self.hanzi_days.clone(),
+            self.pins.clone(),
+            palette,
+            &self.scroll,
+            window.viewport_size().height - px(top + bottom + HEADER_HEIGHT),
+            move |date, action, _, app| {
+                let _ = diary.update(app, |diary, cx| {
+                    match action {
+                        DateAction::Open => diary.open_day(date, cx),
+                        DateAction::PickPin => {
+                            diary.pin_picker = Some((date, false));
                             cx.notify();
-                        },
-                    ))),
-            )
-            .child(calendar_view::months(
-                self.today,
-                self.saved_days.clone(),
-                self.pins.clone(),
-                &self.scroll,
-                window.viewport_size().height - px(top + bottom + HEADER_HEIGHT),
-                move |date, action, _, app| {
-                    let _ = diary.update(app, |diary, cx| {
-                        match action {
-                            DateAction::Open => {
-                                diary.entry = Some(DaySheet {
-                                    date,
-                                    ink: ManagedPlatformView::new(INK_VIEW)
-                                        .with_param("date", date.to_string()),
-                                });
-                            }
-                            DateAction::PickPin => diary.pin_picker = Some((date, false)),
                         }
-                        cx.notify();
-                    });
-                },
+                    }
+                });
+            },
+        ))
+        .when_some(self.pin_picker, |root, (date, failed)| {
+            let current = self.pins.get(&date).copied();
+            root.child(calendar_view::pin_picker(
+                date,
+                current,
+                failed,
+                palette,
+                cx.listener(move |diary, action: &PinAction, _, cx| {
+                    diary.update_pin(date, *action, cx);
+                }),
             ))
-            .when_some(self.pin_picker, |root, (date, failed)| {
-                let current = self.pins.get(&date).copied();
-                root.child(calendar_view::pin_picker(
-                    date,
-                    current,
-                    failed,
-                    cx.listener(move |diary, action: &PinAction, _, cx| {
-                        diary.update_pin(date, *action, cx);
-                    }),
-                ))
-            })
+        })
     }
 }
 
-fn header_button(id: &'static str, label: &'static str) -> gpui::Stateful<gpui::Div> {
+fn day_nav_button(
+    id: &'static str,
+    label: &'static str,
+    palette: Palette,
+) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(id)
+        .focusable()
+        .w(px(44.))
+        .h(px(40.))
+        .flex_shrink_0()
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded_md()
+        .border_1()
+        .border_color(rgb(palette.rule))
+        .bg(rgb(palette.wash))
+        .text_size(px(22.))
+        .text_color(rgb(palette.accent))
+        .font_weight(gpui::FontWeight::SEMIBOLD)
+        .cursor_pointer()
+        .active(move |style| style.bg(rgb(palette.rule)))
+        .focus_visible(move |style| style.bg(rgb(palette.rule)))
+        .child(label)
+}
+
+fn header_button(
+    id: &'static str,
+    label: &'static str,
+    palette: Palette,
+) -> gpui::Stateful<gpui::Div> {
     div()
         .id(id)
         .focusable()
@@ -230,31 +523,12 @@ fn header_button(id: &'static str, label: &'static str) -> gpui::Stateful<gpui::
         .flex()
         .items_center()
         .rounded_sm()
-        .text_color(rgb(calendar_view::ACCENT))
+        .text_color(rgb(palette.accent))
         .font_weight(gpui::FontWeight::SEMIBOLD)
         .cursor_pointer()
-        .active(|style| style.bg(rgb(calendar_view::WASH)))
-        .focus_visible(|style| style.bg(rgb(calendar_view::WASH)))
+        .active(move |style| style.bg(rgb(palette.wash)))
+        .focus_visible(move |style| style.bg(rgb(palette.wash)))
         .child(label)
-}
-
-fn confirm_clear_day(date: NaiveDate) {
-    let _ = android_jni::with_env(|env| {
-        let class = android_jni::find_app_class(env, "dev.gpui.mobile.GpuiPlatformView")?;
-        let date = env
-            .new_string(date.to_string())
-            .map_err(|error| error.to_string())?;
-        let result = env.call_static_method(
-            &class,
-            jni_str!("confirmClearDay"),
-            jni_sig!("(Ljava/lang/String;)V"),
-            &[JValue::Object(date.as_ref())],
-        );
-        if result.is_err() {
-            env.exception_clear();
-        }
-        result.map(|_| ()).map_err(|error| error.to_string())
-    });
 }
 
 fn edge_to_edge_insets() -> [i32; 4] {
@@ -279,6 +553,172 @@ fn edge_to_edge_insets() -> [i32; 4] {
         result.map_err(|error| error.to_string())
     })
     .unwrap_or_default()
+}
+
+fn format_day_header(date: NaiveDate, format: DateFormat) -> String {
+    if let Some(custom) = format.format_custom(date) {
+        return custom;
+    }
+    android_jni::with_env(|env| {
+        let class = android_jni::find_app_class(env, "io.github.vquand.anddiary.DiaryActivity")?;
+        let result: jni::errors::Result<_> = (|| {
+            let value = env.call_static_method(
+                &class,
+                jni_str!("formatSystemDate"),
+                jni_sig!("(III)Ljava/lang/String;"),
+                &[
+                    JValue::Int(date.year()),
+                    JValue::Int(date.month() as i32),
+                    JValue::Int(date.day() as i32),
+                ],
+            )?;
+            let jstr = jni::objects::JString::cast_local(env, value.l()?)?;
+            let text = jstr.to_string();
+            Ok(text)
+        })();
+        if result.is_err() {
+            env.exception_clear();
+        }
+        result.map_err(|error| error.to_string())
+    })
+    .unwrap_or_else(|_| date.format("%a, %b %-d, %Y").to_string())
+}
+
+fn is_system_dark_mode() -> bool {
+    android_jni::with_env(|env| {
+        let activity = android_jni::activity(env)?;
+        let class = android_jni::find_app_class(env, "io.github.vquand.anddiary.DiaryActivity")?;
+        let result: jni::errors::Result<_> = (|| {
+            let value = env.call_static_method(
+                &class,
+                jni_str!("isSystemDarkMode"),
+                jni_sig!("(Landroid/app/Activity;)Z"),
+                &[JValue::Object(&activity)],
+            )?;
+            value.z()
+        })();
+        if result.is_err() {
+            env.exception_clear();
+        }
+        result.map_err(|error| error.to_string())
+    })
+    .unwrap_or(false)
+}
+
+fn begin_header_scrub() {
+    let _ = android_jni::with_env(|env| {
+        let class = android_jni::find_app_class(env, "dev.gpui.mobile.GpuiPlatformView")?;
+        let result = env.call_static_method(
+            &class,
+            jni_str!("beginHeaderScrub"),
+            jni_sig!("()V"),
+            &[],
+        );
+        if result.is_err() {
+            env.exception_clear();
+        }
+        result.map(|_| ()).map_err(|error| error.to_string())
+    });
+}
+
+fn update_header_scrub(dx_dp: f32) {
+    let _ = android_jni::with_env(|env| {
+        let class = android_jni::find_app_class(env, "dev.gpui.mobile.GpuiPlatformView")?;
+        let result = env.call_static_method(
+            &class,
+            jni_str!("updateHeaderScrub"),
+            jni_sig!("(F)V"),
+            &[JValue::Float(dx_dp)],
+        );
+        if result.is_err() {
+            env.exception_clear();
+        }
+        result.map(|_| ()).map_err(|error| error.to_string())
+    });
+}
+
+fn end_header_scrub(canceled: bool) {
+    let _ = android_jni::with_env(|env| {
+        let class = android_jni::find_app_class(env, "dev.gpui.mobile.GpuiPlatformView")?;
+        let result = env.call_static_method(
+            &class,
+            jni_str!("endHeaderScrub"),
+            jni_sig!("(Z)V"),
+            &[JValue::Bool(canceled)],
+        );
+        if result.is_err() {
+            env.exception_clear();
+        }
+        result.map(|_| ()).map_err(|error| error.to_string())
+    });
+}
+
+fn switch_android_day(date: NaiveDate) {
+    let _ = android_jni::with_env(|env| {
+        let class = android_jni::find_app_class(env, "dev.gpui.mobile.GpuiPlatformView")?;
+        let date = env
+            .new_string(date.to_string())
+            .map_err(|error| error.to_string())?;
+        let result = env.call_static_method(
+            &class,
+            jni_str!("switchDate"),
+            jni_sig!("(Ljava/lang/String;)V"),
+            &[JValue::Object(date.as_ref())],
+        );
+        if result.is_err() {
+            env.exception_clear();
+        }
+        result.map(|_| ()).map_err(|error| error.to_string())
+    });
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_io_github_vquand_anddiary_DiaryActivity_nativeOnDateSelected(
+    _env: jni::EnvUnowned<'_>,
+    _class: jni::objects::JClass<'_>,
+    year: i32,
+    month: i32,
+    day: i32,
+) {
+    if let Some(date) = NaiveDate::from_ymd_opt(year, month as u32, day as u32) {
+        if let Ok(mut pending) = PENDING_DATE.lock() {
+            *pending = Some(date);
+        }
+        if let Some(window) = android_jni::platform().and_then(|platform| platform.primary_window())
+        {
+            window.request_frame();
+        }
+    }
+}
+
+fn apply_android_settings(settings: AppSettings) {
+    let _ = android_jni::with_env(|env| {
+        let activity = android_jni::activity(env)?;
+        let class = android_jni::find_app_class(env, "io.github.vquand.anddiary.DiaryActivity")?;
+        let result: jni::errors::Result<_> = (|| {
+            let light = env.new_int_array(7)?;
+            light.set_region(env, 0, &Palette::LIGHT.to_argb_array())?;
+            let dark = env.new_int_array(7)?;
+            dark.set_region(env, 0, &Palette::DARK.to_argb_array())?;
+            env.call_static_method(
+                &class,
+                jni_str!("applySettings"),
+                jni_sig!("(Landroid/app/Activity;II[I[I)V"),
+                &[
+                    JValue::Object(&activity),
+                    JValue::Int(settings.theme.code()),
+                    JValue::Int(settings.toolbar.code()),
+                    JValue::Object(&light),
+                    JValue::Object(&dark),
+                ],
+            )?;
+            Ok(())
+        })();
+        if result.is_err() {
+            env.exception_clear();
+        }
+        result.map_err(|error| error.to_string())
+    });
 }
 
 #[unsafe(no_mangle)]

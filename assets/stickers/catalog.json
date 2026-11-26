@@ -1,0 +1,96 @@
+{
+  "packs": [
+    {
+      "id": "capybara",
+      "name": "Capybara",
+      "description": "12 extra-chubby brushed-ink capybara moods"
+    },
+    {
+      "id": "rabbit",
+      "name": "Lop Rabbit",
+      "description": "12 soft lop-eared bunny stickers with low ears"
+    },
+    {
+      "id": "dog",
+      "name": "Dogs",
+      "description": "12 friendly dogs: Samoyed, Golden Retriever, Labrador, Corgi & more"
+    },
+    {
+      "id": "cat",
+      "name": "Fluffy Cats",
+      "description": "12 fluffy, round-faced, small-pawed house cats"
+    },
+    {
+      "id": "classic",
+      "name": "Classic",
+      "description": "Everyday ink symbols, weather, and critters"
+    }
+  ],
+  "stickers": [
+    { "id": "capybara/happy", "pack": "capybara", "sheet": "sheets/capybara.png", "cols": 4, "rows": 3, "col": 0, "row": 0, "label": "Capybara Happy", "description": "Happy smiling chubby capybara with sparkles", "tags": ["capybara", "chubby", "happy", "smile", "joy", "cute", "animal", "mood"] },
+    { "id": "capybara/sleepy", "pack": "capybara", "sheet": "sheets/capybara.png", "cols": 4, "rows": 3, "col": 1, "row": 0, "label": "Capybara Sleepy", "description": "Sleepy chubby capybara curled into a loaf napping", "tags": ["capybara", "chubby", "sleepy", "tired", "nap", "sleep", "rest", "cozy", "night"] },
+    { "id": "capybara/tea", "pack": "capybara", "sheet": "sheets/capybara.png", "cols": 4, "rows": 3, "col": 2, "row": 0, "label": "Capybara Tea", "description": "Cozy chubby capybara holding a warm teacup", "tags": ["capybara", "chubby", "tea", "drink", "cozy", "relax", "chill", "warm", "break"] },
+    { "id": "capybara/bath", "pack": "capybara", "sheet": "sheets/capybara.png", "cols": 4, "rows": 3, "col": 3, "row": 0, "label": "Capybara Bath", "description": "Chubby capybara soaking in a hot spring with yuzu orange", "tags": ["capybara", "chubby", "bath", "onsen", "yuzu", "orange", "relax", "chill", "happy"] },
+    { "id": "capybara/reading", "pack": "capybara", "sheet": "sheets/capybara.png", "cols": 4, "rows": 3, "col": 0, "row": 1, "label": "Capybara Reading", "description": "Chubby capybara calmly reading an open diary book", "tags": ["capybara", "chubby", "reading", "book", "diary", "study", "quiet", "cozy"] },
+    { "id": "capybara/sad", "pack": "capybara", "sheet": "sheets/capybara.png", "cols": 4, "rows": 3, "col": 1, "row": 1, "label": "Capybara Sad", "description": "Sad drooping chubby capybara with a tiny teardrop", "tags": ["capybara", "chubby", "sad", "cry", "gloomy", "blue", "mood", "tired"] },
+    { "id": "capybara/eating", "pack": "capybara", "sheet": "sheets/capybara.png", "cols": 4, "rows": 3, "col": 2, "row": 1, "label": "Capybara Eating", "description": "Chubby capybara happily eating watermelon", "tags": ["capybara", "chubby", "eating", "food", "snack", "watermelon", "happy", "yummy"] },
+    { "id": "capybara/love", "pack": "capybara", "sheet": "sheets/capybara.png", "cols": 4, "rows": 3, "col": 3, "row": 1, "label": "Capybara Love", "description": "Loving chubby capybara hugging a vermilion heart", "tags": ["capybara", "chubby", "love", "heart", "happy", "warm", "hug", "cute"] },
+    { "id": "capybara/music", "pack": "capybara", "sheet": "sheets/capybara.png", "cols": 4, "rows": 3, "col": 0, "row": 2, "label": "Capybara Music", "description": "Chubby capybara chilling with headphones listening to music", "tags": ["capybara", "chubby", "music", "headphones", "chill", "relax", "song", "cozy"] },
+    { "id": "capybara/rain", "pack": "capybara", "sheet": "sheets/capybara.png", "cols": 4, "rows": 3, "col": 1, "row": 2, "label": "Capybara Rain", "description": "Chubby capybara holding a green leaf umbrella in rain", "tags": ["capybara", "chubby", "rain", "umbrella", "weather", "leaf", "cozy"] },
+    { "id": "capybara/star", "pack": "capybara", "sheet": "sheets/capybara.png", "cols": 4, "rows": 3, "col": 2, "row": 2, "label": "Capybara Celebrate", "description": "Celebrating chubby capybara holding a golden star", "tags": ["capybara", "chubby", "celebrate", "star", "happy", "win", "proud", "party"] },
+    { "id": "capybara/stretch", "pack": "capybara", "sheet": "sheets/capybara.png", "cols": 4, "rows": 3, "col": 3, "row": 2, "label": "Capybara Stretch", "description": "Chubby capybara stretching and waddling cheerfully", "tags": ["capybara", "chubby", "stretch", "walk", "exercise", "happy", "morning"] },
+
+    { "id": "rabbit/happy", "pack": "rabbit", "sheet": "sheets/rabbit.png", "cols": 4, "rows": 3, "col": 0, "row": 0, "label": "Rabbit Happy", "description": "Happy smiling lop-eared rabbit with rosy cheeks", "tags": ["rabbit", "bunny", "lop", "low ears", "happy", "smile", "joy", "cute", "mood"] },
+    { "id": "rabbit/sleepy", "pack": "rabbit", "sheet": "sheets/rabbit.png", "cols": 4, "rows": 3, "col": 1, "row": 0, "label": "Rabbit Sleepy", "description": "Sleepy lop-eared rabbit curled up napping", "tags": ["rabbit", "bunny", "lop", "low ears", "sleepy", "tired", "nap", "sleep", "cozy"] },
+    { "id": "rabbit/eating", "pack": "rabbit", "sheet": "sheets/rabbit.png", "cols": 4, "rows": 3, "col": 2, "row": 0, "label": "Rabbit Eating", "description": "Lop-eared rabbit happily munching a carrot", "tags": ["rabbit", "bunny", "lop", "low ears", "eating", "food", "carrot", "snack", "happy"] },
+    { "id": "rabbit/reading", "pack": "rabbit", "sheet": "sheets/rabbit.png", "cols": 4, "rows": 3, "col": 3, "row": 0, "label": "Rabbit Reading", "description": "Lop-eared rabbit quietly reading an open diary", "tags": ["rabbit", "bunny", "lop", "low ears", "reading", "book", "diary", "study", "cozy"] },
+    { "id": "rabbit/love", "pack": "rabbit", "sheet": "sheets/rabbit.png", "cols": 4, "rows": 3, "col": 0, "row": 1, "label": "Rabbit Love", "description": "Loving lop-eared rabbit hugging a vermilion heart", "tags": ["rabbit", "bunny", "lop", "low ears", "love", "heart", "happy", "warm", "hug"] },
+    { "id": "rabbit/sad", "pack": "rabbit", "sheet": "sheets/rabbit.png", "cols": 4, "rows": 3, "col": 1, "row": 1, "label": "Rabbit Sad", "description": "Sad shy lop-eared rabbit with tiny teardrop", "tags": ["rabbit", "bunny", "lop", "low ears", "sad", "shy", "cry", "gloomy", "mood"] },
+    { "id": "rabbit/tea", "pack": "rabbit", "sheet": "sheets/rabbit.png", "cols": 4, "rows": 3, "col": 2, "row": 1, "label": "Rabbit Tea", "description": "Cozy lop-eared rabbit holding a warm teacup", "tags": ["rabbit", "bunny", "lop", "low ears", "tea", "drink", "cozy", "warm", "relax"] },
+    { "id": "rabbit/flower", "pack": "rabbit", "sheet": "sheets/rabbit.png", "cols": 4, "rows": 3, "col": 3, "row": 1, "label": "Rabbit Flower", "description": "Lop-eared rabbit holding a small daisy flower", "tags": ["rabbit", "bunny", "lop", "low ears", "flower", "daisy", "spring", "happy", "nature"] },
+    { "id": "rabbit/rain", "pack": "rabbit", "sheet": "sheets/rabbit.png", "cols": 4, "rows": 3, "col": 0, "row": 2, "label": "Rabbit Rain", "description": "Lop-eared rabbit under a tiny umbrella in rain", "tags": ["rabbit", "bunny", "lop", "low ears", "rain", "umbrella", "weather", "cozy"] },
+    { "id": "rabbit/music", "pack": "rabbit", "sheet": "sheets/rabbit.png", "cols": 4, "rows": 3, "col": 1, "row": 2, "label": "Rabbit Music", "description": "Lop-eared rabbit listening to music happily", "tags": ["rabbit", "bunny", "lop", "low ears", "music", "chill", "happy", "song"] },
+    { "id": "rabbit/star", "pack": "rabbit", "sheet": "sheets/rabbit.png", "cols": 4, "rows": 3, "col": 2, "row": 2, "label": "Rabbit Celebrate", "description": "Celebrating lop-eared rabbit with a golden star", "tags": ["rabbit", "bunny", "lop", "low ears", "celebrate", "star", "happy", "yay"] },
+    { "id": "rabbit/cozy", "pack": "rabbit", "sheet": "sheets/rabbit.png", "cols": 4, "rows": 3, "col": 3, "row": 2, "label": "Rabbit Cozy", "description": "Cozy lop-eared rabbit wrapped in a soft blanket", "tags": ["rabbit", "bunny", "lop", "low ears", "cozy", "blanket", "warm", "rest", "sleepy"] },
+
+    { "id": "dog/samoyed_happy", "pack": "dog", "sheet": "sheets/dog.png", "cols": 4, "rows": 3, "col": 0, "row": 0, "label": "Samoyed Happy", "description": "Fluffy white Samoyed smiling brightly like a cloud", "tags": ["dog", "puppy", "samoyed", "fluffy", "white", "happy", "smile", "cute"] },
+    { "id": "dog/golden_happy", "pack": "dog", "sheet": "sheets/dog.png", "cols": 4, "rows": 3, "col": 1, "row": 0, "label": "Golden Happy", "description": "Happy Golden Retriever grinning warmly", "tags": ["dog", "puppy", "golden retriever", "golden", "happy", "smile", "friendly"] },
+    { "id": "dog/labrador_play", "pack": "dog", "sheet": "sheets/dog.png", "cols": 4, "rows": 3, "col": 2, "row": 0, "label": "Labrador Play", "description": "Playful yellow Labrador sitting happily", "tags": ["dog", "puppy", "labrador", "lab", "playful", "happy", "cute"] },
+    { "id": "dog/corgi_happy", "pack": "dog", "sheet": "sheets/dog.png", "cols": 4, "rows": 3, "col": 3, "row": 0, "label": "Corgi Happy", "description": "Cheerful Corgi with big ears smiling", "tags": ["dog", "puppy", "corgi", "happy", "smile", "cute", "cheerful"] },
+    { "id": "dog/shiba_chill", "pack": "dog", "sheet": "sheets/dog.png", "cols": 4, "rows": 3, "col": 0, "row": 1, "label": "Shiba Chill", "description": "Cozy smiling Shiba Inu sitting calmly", "tags": ["dog", "puppy", "shiba", "shiba inu", "chill", "cozy", "happy", "calm"] },
+    { "id": "dog/samoyed_sleepy", "pack": "dog", "sheet": "sheets/dog.png", "cols": 4, "rows": 3, "col": 1, "row": 1, "label": "Samoyed Sleepy", "description": "Sleepy fluffy Samoyed curled up napping", "tags": ["dog", "puppy", "samoyed", "fluffy", "sleepy", "nap", "tired", "cozy"] },
+    { "id": "dog/golden_love", "pack": "dog", "sheet": "sheets/dog.png", "cols": 4, "rows": 3, "col": 2, "row": 1, "label": "Golden Love", "description": "Loving Golden Retriever hugging a vermilion heart", "tags": ["dog", "puppy", "golden retriever", "golden", "love", "heart", "happy", "warm"] },
+    { "id": "dog/labrador_sad", "pack": "dog", "sheet": "sheets/dog.png", "cols": 4, "rows": 3, "col": 3, "row": 1, "label": "Labrador Sad", "description": "Sad puppy-eyed Labrador with a tiny teardrop", "tags": ["dog", "puppy", "labrador", "lab", "sad", "cry", "mood", "sorry"] },
+    { "id": "dog/poodle_cute", "pack": "dog", "sheet": "sheets/dog.png", "cols": 4, "rows": 3, "col": 0, "row": 2, "label": "Poodle Cute", "description": "Fluffy cream Poodle with rosy cheeks", "tags": ["dog", "puppy", "poodle", "fluffy", "cute", "happy", "sweet"] },
+    { "id": "dog/husky_surprised", "pack": "dog", "sheet": "sheets/dog.png", "cols": 4, "rows": 3, "col": 1, "row": 2, "label": "Husky Surprised", "description": "Silly surprised Husky with bright eyes", "tags": ["dog", "puppy", "husky", "surprised", "funny", "silly", "wow"] },
+    { "id": "dog/beagle_curious", "pack": "dog", "sheet": "sheets/dog.png", "cols": 4, "rows": 3, "col": 2, "row": 2, "label": "Beagle Curious", "description": "Curious floppy-eared Beagle looking up", "tags": ["dog", "puppy", "beagle", "curious", "cute", "wonder"] },
+    { "id": "dog/corgi_eating", "pack": "dog", "sheet": "sheets/dog.png", "cols": 4, "rows": 3, "col": 3, "row": 2, "label": "Corgi Treat", "description": "Happy Corgi munching a dog treat", "tags": ["dog", "puppy", "corgi", "eating", "food", "snack", "treat", "happy"] },
+
+    { "id": "cat/ragdoll_happy", "pack": "cat", "sheet": "sheets/cat.png", "cols": 4, "rows": 3, "col": 0, "row": 0, "label": "Ragdoll Happy", "description": "Fluffy blue-eyed Ragdoll cat smiling happily", "tags": ["cat", "kitty", "fluffy", "ragdoll", "happy", "smile", "cute"] },
+    { "id": "cat/british_cozy", "pack": "cat", "sheet": "sheets/cat.png", "cols": 4, "rows": 3, "col": 1, "row": 0, "label": "Chubby Gray Cat", "description": "Chubby round-faced British Shorthair sitting cozily", "tags": ["cat", "kitty", "fluffy", "british shorthair", "chubby", "cozy", "chill"] },
+    { "id": "cat/calico_happy", "pack": "cat", "sheet": "sheets/cat.png", "cols": 4, "rows": 3, "col": 2, "row": 0, "label": "Calico Happy", "description": "Cheerful fluffy Calico cat with tiny paws up", "tags": ["cat", "kitty", "fluffy", "calico", "paws", "happy", "cute"] },
+    { "id": "cat/orange_sleepy", "pack": "cat", "sheet": "sheets/cat.png", "cols": 4, "rows": 3, "col": 3, "row": 0, "label": "Orange Cat Sleepy", "description": "Sleepy fluffy orange tabby curled up napping", "tags": ["cat", "kitty", "fluffy", "orange", "tabby", "sleepy", "nap", "cozy"] },
+    { "id": "cat/white_love", "pack": "cat", "sheet": "sheets/cat.png", "cols": 4, "rows": 3, "col": 0, "row": 1, "label": "White Cat Love", "description": "Fluffy white cat hugging a vermilion heart", "tags": ["cat", "kitty", "fluffy", "white", "love", "heart", "happy", "warm"] },
+    { "id": "cat/fold_paws", "pack": "cat", "sheet": "sheets/cat.png", "cols": 4, "rows": 3, "col": 1, "row": 1, "label": "Scottish Fold Paws", "description": "Round-faced Scottish Fold showing tiny soft paws", "tags": ["cat", "kitty", "fluffy", "scottish fold", "paws", "cute", "shy"] },
+    { "id": "cat/tuxedo_reading", "pack": "cat", "sheet": "sheets/cat.png", "cols": 4, "rows": 3, "col": 2, "row": 1, "label": "Tuxedo Reading", "description": "Fluffy tuxedo cat reading a small open book", "tags": ["cat", "kitty", "fluffy", "tuxedo", "reading", "book", "diary", "study"] },
+    { "id": "cat/gray_sad", "pack": "cat", "sheet": "sheets/cat.png", "cols": 4, "rows": 3, "col": 3, "row": 1, "label": "Fluffy Cat Sad", "description": "Sad fluffy gray cat with a tiny blue teardrop", "tags": ["cat", "kitty", "fluffy", "gray", "sad", "cry", "mood"] },
+    { "id": "cat/tabby_eating", "pack": "cat", "sheet": "sheets/cat.png", "cols": 4, "rows": 3, "col": 0, "row": 2, "label": "Tabby Eating", "description": "Fluffy tabby cat happily eating a fish snack", "tags": ["cat", "kitty", "fluffy", "tabby", "eating", "fish", "food", "happy"] },
+    { "id": "cat/cream_tea", "pack": "cat", "sheet": "sheets/cat.png", "cols": 4, "rows": 3, "col": 1, "row": 2, "label": "Cream Cat Tea", "description": "Fluffy cream cat holding a warm teacup", "tags": ["cat", "kitty", "fluffy", "cream", "tea", "cozy", "warm", "relax"] },
+    { "id": "cat/kitten_paws", "pack": "cat", "sheet": "sheets/cat.png", "cols": 4, "rows": 3, "col": 2, "row": 2, "label": "Kitten Paws", "description": "Tiny fluffy kitten waving its cute small paws", "tags": ["cat", "kitty", "kitten", "fluffy", "paws", "small paws", "cute", "happy"] },
+    { "id": "cat/box_cat", "pack": "cat", "sheet": "sheets/cat.png", "cols": 4, "rows": 3, "col": 3, "row": 2, "label": "Box Cat", "description": "Fluffy cat peeking happily out of a cardboard box", "tags": ["cat", "kitty", "fluffy", "box", "cozy", "cute", "happy", "playful"] },
+
+    { "id": "star", "pack": "classic", "file": "star.png", "label": "Star", "description": "Golden ink star for highlights and favorite days", "tags": ["classic", "star", "favorite", "highlight", "happy", "sparkle", "gold", "night"] },
+    { "id": "heart", "pack": "classic", "file": "heart.png", "label": "Heart", "description": "Warm brushed-ink heart for love and gratitude", "tags": ["classic", "heart", "love", "happy", "warm", "care", "gratitude"] },
+    { "id": "flower", "pack": "classic", "file": "flower.png", "label": "Flower", "description": "Soft watercolor blossom for spring and calm days", "tags": ["classic", "flower", "nature", "spring", "bloom", "happy", "pretty", "calm"] },
+    { "id": "sun", "pack": "classic", "file": "sun.png", "label": "Sun", "description": "Warm sunny ink emblem for bright weather", "tags": ["classic", "sun", "sunny", "weather", "bright", "warm", "happy", "day"] },
+    { "id": "important", "pack": "classic", "file": "important.png", "label": "Important", "description": "Exclamation mark for reminders and key events", "tags": ["classic", "important", "alert", "reminder", "note", "urgent", "event"] },
+    { "id": "cat", "pack": "classic", "file": "cat.png", "label": "Classic Cat", "description": "Smiling tabby cat face", "tags": ["classic", "cat", "kitty", "pet", "animal", "happy", "cute", "cozy"] },
+    { "id": "dog", "pack": "classic", "file": "dog.png", "label": "Classic Dog", "description": "Friendly brushed-ink dog", "tags": ["classic", "dog", "puppy", "pet", "animal", "happy", "cute", "friend"] },
+    { "id": "slime", "pack": "classic", "file": "slime.png", "label": "Slime", "description": "Playful green ink slime critter", "tags": ["classic", "slime", "cute", "game", "fun", "playful", "mood"] },
+    { "id": "dragon", "pack": "classic", "file": "dragon.png", "label": "Dragon", "description": "Small ink dragon emblem", "tags": ["classic", "dragon", "fantasy", "myth", "animal", "strong", "cool"] },
+    { "id": "sunrise", "pack": "classic", "file": "sunrise.png", "label": "Sunrise", "description": "Morning sunrise over horizon", "tags": ["classic", "sunrise", "morning", "weather", "fresh", "start", "warm"] },
+    { "id": "rain", "pack": "classic", "file": "rain.png", "label": "Rain", "description": "Rain cloud and droplets for rainy or quiet moods", "tags": ["classic", "rain", "rainy", "weather", "sad", "gloomy", "cozy", "water"] },
+    { "id": "mist", "pack": "classic", "file": "mist.png", "label": "Mist", "description": "Soft morning mist and fog", "tags": ["classic", "mist", "fog", "weather", "calm", "quiet", "dreamy"] },
+    { "id": "cloud", "pack": "classic", "file": "cloud.png", "label": "Cloud", "description": "Drifting ink cloud", "tags": ["classic", "cloud", "cloudy", "weather", "sky", "calm", "chill"] }
+  ]
+}

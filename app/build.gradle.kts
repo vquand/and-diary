@@ -27,15 +27,19 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
+
+    sourceSets.getByName("main").assets.directories.add(rootProject.file("assets").absolutePath)
 }
 
 dependencies {
     val ink = "1.1.0-alpha12"
     implementation("androidx.ink:ink-authoring:$ink")
     implementation("androidx.ink:ink-brush:$ink")
+    implementation("androidx.ink:ink-geometry:$ink")
     implementation("androidx.ink:ink-rendering:$ink")
     implementation("androidx.ink:ink-storage:$ink")
     implementation("androidx.ink:ink-strokes:$ink")
+    testImplementation("junit:junit:4.13.2")
 }
 
 abstract class BuildRustLibrary @Inject constructor(private val exec: ExecOperations) : DefaultTask() {

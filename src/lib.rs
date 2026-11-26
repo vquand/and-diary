@@ -12,3 +12,9 @@ mod stickers;
 
 #[cfg(any(target_os = "android", test))]
 mod pins;
+
+#[cfg(any(target_os = "android", test))]
+mod settings;
+
+#[cfg(target_os = "android")]
+mod settings_view;
