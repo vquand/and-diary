@@ -432,7 +432,7 @@ internal object SelectionExporter {
             if (!picturesDir.exists() && !picturesDir.mkdirs()) {
                 throw IOException("Could not create Gallery Pictures/Diary directory")
             }
-            val file = File(picturesDir, request.fileName)
+            val file = uniqueFile(picturesDir, request.fileName)
             file.outputStream().use { out ->
                 if (!bitmap.compress(compressFormat, quality, out)) {
                     throw IOException("Bitmap compression failed")
@@ -444,6 +444,20 @@ internal object SelectionExporter {
                 arrayOf(request.format.mimeType),
                 null,
             )
+        }
+    }
+
+    fun uniqueFile(dir: File, fileName: String): File {
+        val initial = File(dir, fileName)
+        if (!initial.exists()) return initial
+        val dot = fileName.lastIndexOf('.')
+        val stem = if (dot > 0) fileName.substring(0, dot) else fileName
+        val ext = if (dot > 0) fileName.substring(dot) else ""
+        var index = 1
+        while (true) {
+            val candidate = File(dir, "$stem ($index)$ext")
+            if (!candidate.exists()) return candidate
+            index++
         }
     }
 

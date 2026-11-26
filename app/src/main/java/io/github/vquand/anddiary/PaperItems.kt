@@ -226,10 +226,10 @@ internal class PaperItemsStore(private val context: Context, val date: LocalDate
         val extension = if (kind == PaperItemKind.PHOTO) "webp" else extensionFor(displayName, mime, kind)
         val id = UUID.randomUUID().toString()
         val filename = "$id.$extension"
+        val destination = File(mediaDir, filename)
         synchronized(pendingImports) { pendingImports.add(filename) }
         try {
             mediaDir.mkdirs()
-            val destination = File(mediaDir, filename)
 
             if (kind == PaperItemKind.PHOTO) {
                 importPhotoAsWebp(uri, destination)
@@ -319,6 +319,7 @@ internal class PaperItemsStore(private val context: Context, val date: LocalDate
                 height = targetHeight,
             )
         } catch (error: Exception) {
+            destination.delete()
             clearPendingImport(filename)
             throw error
         }
@@ -497,11 +498,7 @@ internal class PaperItemsStore(private val context: Context, val date: LocalDate
         if (!fromMime.isNullOrBlank()) return fromMime
         val fromName = displayName?.substringAfterLast('.', "")?.lowercase(Locale.US)
         if (!fromName.isNullOrBlank() && fromName.length <= 5) return fromName
-        return when (kind) {
-            PaperItemKind.VIDEO -> "mp4"
-            PaperItemKind.AUDIO -> "m4a"
-            PaperItemKind.PHOTO, PaperItemKind.STICKER, PaperItemKind.HANZI -> "webp"
-        }
+        return if (kind == PaperItemKind.AUDIO) "m4a" else "mp4"
     }
 
     companion object {

@@ -149,8 +149,8 @@ internal object LassoGeometry {
     }
 
     /**
-     * Clamps an item's top-left (x, y) so its center stays within the sheet bounds
-     * and the item remains reachable.
+     * Clamps an item's top-left (x, y) so it stays within the sheet bounds
+     * and remains reachable.
      */
     fun clampItemToSheet(
         x: Float,
@@ -163,6 +163,33 @@ internal object LassoGeometry {
         val maxX = (sheetWidth - width).coerceAtLeast(0f)
         val maxY = (sheetHeight - height).coerceAtLeast(0f)
         return x.coerceIn(0f, maxX) to y.coerceIn(0f, maxY)
+    }
+
+    /**
+     * Computes a shared (shiftX, shiftY) to keep a group bounding box [minX..maxX, minY..maxY]
+     * inside [0..sheetWidth, 0..sheetHeight] without splitting strokes and items apart.
+     */
+    fun computeGroupClampShift(
+        minX: Float,
+        minY: Float,
+        maxX: Float,
+        maxY: Float,
+        sheetWidth: Float,
+        sheetHeight: Float,
+    ): Pair<Float, Float> {
+        val shiftX = when {
+            maxX - minX >= sheetWidth -> -minX
+            minX < 0f -> -minX
+            maxX > sheetWidth -> sheetWidth - maxX
+            else -> 0f
+        }
+        val shiftY = when {
+            maxY - minY >= sheetHeight -> -minY
+            minY < 0f -> -minY
+            maxY > sheetHeight -> sheetHeight - maxY
+            else -> 0f
+        }
+        return shiftX to shiftY
     }
 
     /**

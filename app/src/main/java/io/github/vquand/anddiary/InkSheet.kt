@@ -476,6 +476,7 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
     private fun importMediaAsync(uri: Uri, kind: PaperItemKind) {
         val targetDate = currentDate
         val targetStore = itemsStore
+        val startGen = paper.clearGeneration
         val centerX = paper.viewportCenterX()
         val centerY = paper.viewportCenterY()
         val maxWidth = paper.maxNewItemWidth()
@@ -485,8 +486,16 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                 targetStore.loadBitmap(item)
                 post {
                     if (currentDate == targetDate) {
-                        paper.addImportedItem(item)
-                        targetStore.clearPendingImport(item.ref)
+                        if (paper.clearGeneration == startGen) {
+                            paper.addImportedItem(item)
+                            targetStore.clearPendingImport(item.ref)
+                        } else {
+                            // Day was cleared while importing; discard the stale file cleanly.
+                            ioExecutor.execute {
+                                runCatching { targetStore.mediaFile(item).delete() }
+                                targetStore.clearPendingImport(item.ref)
+                            }
+                        }
                     } else {
                         // User switched days while importing; persist to the original date safely.
                         ioExecutor.execute {
@@ -672,6 +681,8 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
     private inner class Paper : FrameLayout(context) {
         var fingerInk = false
         var activeTool = DiaryTool.PEN
+        var clearGeneration = 0
+            private set
         private val ink = InProgressStrokesView(context)
         private val renderer = CanvasStrokeRenderer.create()
         private val identity = Matrix()
@@ -764,6 +775,7 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
         fun currentItems(): List<PaperItem> = items
 
         fun reloadForCurrentDate() {
+            clearGeneration++
             cancelGesture()
             loadingBitmaps.clear()
             selectedItemIds = emptySet()
@@ -1038,7 +1050,8 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                     if (activeTool == DiaryTool.SELECT && first && !stylusEraser) {
                         if (handleSelectDown(pointer, paperX, paperY)) return true
                         if (stylus || fingerInk) {
-                            clearSelection()
+                            // Defer clearing selection until the lasso actually drags,
+                            // so a 2-finger rotate starting outside a small sticker still works.
                             lassoing = Lassoing(pointer, mutableListOf(paperX to paperY))
                             invalidate()
                         } else if (tool == MotionEvent.TOOL_TYPE_FINGER) {
@@ -1112,6 +1125,7 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                             val cy = event.getY(pointerIndex) + offset
                             val last = active.points.last()
                             if (hypot((cx - last.first).toDouble(), (cy - last.second).toDouble()) >= 4f * density) {
+                                if (hasSelection) clearSelection()
                                 active.points.add(cx to cy)
                                 invalidate()
                             }
@@ -1428,8 +1442,16 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
             val matrix = Matrix()
             transform.fillMatrix(matrix)
             val pt = FloatArray(2)
+            val minW = 44f * density
+            val maxItemW = (width - 16f * density).coerceAtLeast(minW)
 
-            val nextItems = preItems.map { item ->
+            // First transform selected items (capping width to sheet) and measure overall group bounds.
+            var groupMinX = Float.POSITIVE_INFINITY
+            var groupMinY = Float.POSITIVE_INFINITY
+            var groupMaxX = Float.NEGATIVE_INFINITY
+            var groupMaxY = Float.NEGATIVE_INFINITY
+
+            val prelimItems = preItems.map { item ->
                 if (item.id !in selectedItemIds) return@map item
                 val cx = item.x + item.width / 2f
                 val cy = item.y + item.height / 2f
@@ -1437,25 +1459,65 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                 pt[1] = cy
                 matrix.mapPoints(pt)
                 val itemScale = if (item.kind == PaperItemKind.AUDIO) 1f else transform.scale
-                val minW = 44f * density
-                val newW = (item.width * itemScale).coerceAtLeast(minW)
+                val newW = (item.width * itemScale).coerceIn(minW, maxItemW)
                 val ratio = if (item.width > 0f) newW / item.width else 1f
                 val newH = (item.height * ratio).coerceAtLeast(24f * density)
-                val (clampedX, clampedY) = LassoGeometry.clampItemToSheet(
+                val newRot = LassoGeometry.normalizeAngle(item.rotation + transform.rotationDeg)
+                val updated = item.copy(
                     x = pt[0] - newW / 2f,
                     y = pt[1] - newH / 2f,
                     width = newW,
                     height = newH,
+                    rotation = newRot,
+                )
+                val b = LassoGeometry.rotatedRectBounds(updated.x, updated.y, updated.width, updated.height, updated.rotation)
+                if (b[0] < groupMinX) groupMinX = b[0]
+                if (b[1] < groupMinY) groupMinY = b[1]
+                if (b[2] > groupMaxX) groupMaxX = b[2]
+                if (b[3] > groupMaxY) groupMaxY = b[3]
+                updated
+            }
+
+            // Include transformed selected stroke bounds in the group bounding box.
+            val scratch = StrokeInput()
+            for (idx in selectedStrokeIndices) {
+                val stroke = preStrokes.getOrNull(idx) ?: continue
+                val inputs = stroke.inputs
+                for (p in 0 until inputs.size) {
+                    inputs.populate(p, scratch)
+                    pt[0] = scratch.x
+                    pt[1] = scratch.y
+                    matrix.mapPoints(pt)
+                    if (pt[0] < groupMinX) groupMinX = pt[0]
+                    if (pt[1] < groupMinY) groupMinY = pt[1]
+                    if (pt[0] > groupMaxX) groupMaxX = pt[0]
+                    if (pt[1] > groupMaxY) groupMaxY = pt[1]
+                }
+            }
+
+            val (shiftX, shiftY) = if (groupMinX.isFinite() && groupMinY.isFinite() && groupMaxX.isFinite() && groupMaxY.isFinite()) {
+                LassoGeometry.computeGroupClampShift(
+                    minX = groupMinX,
+                    minY = groupMinY,
+                    maxX = groupMaxX,
+                    maxY = groupMaxY,
                     sheetWidth = width.toFloat(),
                     sheetHeight = sheetHeight,
                 )
-                item.copy(
-                    x = clampedX,
-                    y = clampedY,
-                    width = newW,
-                    height = newH,
-                    rotation = LassoGeometry.normalizeAngle(item.rotation + transform.rotationDeg),
-                )
+            } else {
+                0f to 0f
+            }
+
+            if (shiftX != 0f || shiftY != 0f) {
+                matrix.postTranslate(shiftX, shiftY)
+            }
+
+            val nextItems = if (shiftX != 0f || shiftY != 0f) {
+                prelimItems.map { item ->
+                    if (item.id !in selectedItemIds) item else item.copy(x = item.x + shiftX, y = item.y + shiftY)
+                }
+            } else {
+                prelimItems
             }
 
             val nextStrokes = preStrokes.mapIndexed { idx, stroke ->
@@ -1678,7 +1740,15 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                         minWidth = minW,
                         maxWidth = maxW,
                     )
-                    base.copy(x = resized[0], y = resized[1], width = resized[2], height = resized[3])
+                    val (clampedX, clampedY) = LassoGeometry.clampItemToSheet(
+                        x = resized[0],
+                        y = resized[1],
+                        width = resized[2],
+                        height = resized[3],
+                        sheetWidth = width.toFloat(),
+                        sheetHeight = sheetHeight,
+                    )
+                    base.copy(x = clampedX, y = clampedY, width = resized[2], height = resized[3])
                 }
             }
             items = drag.preItems.map { if (it.id == drag.itemId) updated else it }
@@ -1740,6 +1810,7 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
         }
 
         fun clearDay() {
+            clearGeneration++
             stopAudio()
             if (save(emptyList(), emptyList(), allowUnreadable = true)) {
                 readable = true

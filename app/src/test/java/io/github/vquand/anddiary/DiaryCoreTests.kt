@@ -286,4 +286,34 @@ class DiaryCoreTests {
         assertEquals(80f, bounds[2], 0.05f)
         assertEquals(90f, bounds[3], 0.05f)
     }
+
+    @Test
+    fun groupClampShiftKeepsMixedSelectionInsideSheetWithoutSplitting() {
+        val (sx1, sy1) = LassoGeometry.computeGroupClampShift(-30f, 50f, 170f, 250f, 600f, 1200f)
+        assertEquals(30f, sx1, 0.01f)
+        assertEquals(0f, sy1, 0.01f)
+
+        val (sx2, sy2) = LassoGeometry.computeGroupClampShift(500f, 1100f, 650f, 1260f, 600f, 1200f)
+        assertEquals(-50f, sx2, 0.01f)
+        assertEquals(-60f, sy2, 0.01f)
+    }
+
+    @Test
+    fun uniqueFileAvoidsOverwritingExistingExports() {
+        val dir = Files.createTempDirectory("diary-export-test").toFile()
+        try {
+            val first = SelectionExporter.uniqueFile(dir, "diary_2026-11-27.png")
+            assertEquals("diary_2026-11-27.png", first.name)
+            first.writeText("1")
+
+            val second = SelectionExporter.uniqueFile(dir, "diary_2026-11-27.png")
+            assertEquals("diary_2026-11-27 (1).png", second.name)
+            second.writeText("2")
+
+            val third = SelectionExporter.uniqueFile(dir, "diary_2026-11-27.png")
+            assertEquals("diary_2026-11-27 (2).png", third.name)
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
 }
