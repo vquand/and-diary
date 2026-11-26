@@ -67,11 +67,11 @@ Shipped on the writing page:
 
 - Pen, brush, eraser, select. Finger drawing is off until **Finger** is toggled. A finger otherwise scrolls.
 - S Pen side button and `TOOL_TYPE_ERASER` erase. Samsung also sends motion actions 211–214 while the side button is held (`InkSheet` constants).
-- Per-tool color and size in shared preferences `diary_toolbox`. Stroke color and brush kind are stored in the `.ink` file, so a later color change affects new strokes only.
+- Pen and brush color, plus pen, brush, and eraser size, live in shared preferences `diary_toolbox`. The eraser has no saved color. Stroke color and brush kind are stored in the `.ink` file, so a later color change affects new strokes only.
 - Undo and redo, 50 snapshots, in memory for the open day. The files on disk hold the latest saved state.
 - Stickers, photo, video, audio, and hanzi cards as paper items.
 - Select: drag to move, corner handle to resize with the aspect ratio locked (audio has no resize handle), delete handle. Tap an audio clip to play it on the page, a video to open it in a dialog, or a hanzi card to practice.
-- The page is one ruled sheet, about two viewports tall (`sheetHeight` starts at `height * 2`). Horizontal guides are drawn every 32dp. There is no paper-template picker and no multi-section page.
+- The page is one ruled sheet, about two viewports tall. `sheetHeight` is `height * 2`, and a resize keeps it from shrinking. It does not grow as you write. Horizontal guides are drawn every 32dp. There is no paper-template picker and no multi-section page.
 - **Delete this diary** clears that day's ink, items, and copied media after confirmation. It does not remove the calendar pin.
 
 Shipped around the page:
@@ -97,7 +97,7 @@ All of this is app-private internal storage (`context.filesDir`). `android:allow
 
 Writes go through a temp file or `AtomicFile`, then rename. Calendar dots appear only for exact `YYYY-MM-DD.ink` / `.items` names, not for `*.ink.new` or non-canonical dates. Keep that strictness.
 
-Shared preferences sit beside those files. `diary_toolbox` stores pen, brush, and eraser color and size. `diary_app_settings` stores `theme_mode` and `toolbar_mode`, written when Rust calls `applySettings`. It does not store the date format. Treat `files/settings.txt` as the source of truth and the preferences as the Android-side mirror.
+Shared preferences sit beside those files. `diary_toolbox` stores pen and brush color and size, plus eraser size. `diary_app_settings` stores `theme_mode` and `toolbar_mode`, written when Rust calls `applySettings`. It does not store the date format. Treat `files/settings.txt` as the source of truth and the preferences as the Android-side mirror.
 
 Sticker ids in `assets/stickers/catalog.json` are what saved items store. Classic pin artwork filenames match `src/pins.rs` and are `include_bytes!`'d as PNG in `src/stickers.rs`. Renaming a file or reusing an id for different art changes old diaries. See [assets/stickers/README.md](assets/stickers/README.md).
 
@@ -128,7 +128,7 @@ Debug APK: `app/build/outputs/apk/debug/app-debug.apk`.
 
 ## Conventions
 
-- For new UI, take colors from `settings::Palette` (`LIGHT` / `DARK`) on the Rust side and from `DiaryPalette` on the Android side. The writing sheet, including `PaperItemRenderer`, currently paints with `DiaryPalette.LIGHT`, so the page stays ivory while the toolbar, popovers, header, and system bars follow the theme. `HanziPracticeDialog` is a known exception: it uses its own hardcoded light colors.
+- For new UI, take colors from `settings::Palette` (`LIGHT` / `DARK`) on the Rust side and from `DiaryPalette` on the Android side. The writing sheet, including `PaperItemRenderer`, currently paints with `DiaryPalette.LIGHT`, so the page stays ivory while the toolbar, popovers, header, and system bars follow the theme. A few surfaces stay light in the dark theme: `HanziPracticeDialog` uses its own hardcoded colors, and the delete-day and video `AlertDialog`s use `DiaryTheme`, which extends `Theme.Material.Light.NoActionBar`.
 - For new Android copy, add strings in `app/src/main/res/values/strings.xml`. Calendar and settings copy is mostly hardcoded in Rust. `HanziPracticeDialog` and `PaperItemRenderer` also hardcode a few English status lines. Put new copy with the neighboring text instead of adding another hardcoded island.
 - Keep entry files independent of the GPUI shell so a later UI change can still read them.
 - Prefer the existing atomic write pattern for anything stored in `filesDir`.

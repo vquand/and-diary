@@ -94,7 +94,7 @@ Everything lives in the app's private internal storage, which other apps cannot 
 | Calendar pins | `files/pins/YYYY-MM-DD.pin` |
 | Theme, toolbar, and date format | `files/settings.txt` |
 | Android copy of theme and toolbar | preferences `diary_app_settings` |
-| Pen, brush, and eraser color and size | app preferences `diary_toolbox` |
+| Pen and brush color and size, and eraser size | app preferences `diary_toolbox` |
 
 Attached media is copied into the app. The original file stays where you picked it from. Ink is stored as the app's own stroke records, including the brush and the color used for each stroke.
 
@@ -117,7 +117,7 @@ cargo test --locked
 ./gradlew :app:testDebugUnitTest :app:assembleDebug :app:lintDebug
 ```
 
-Please keep real diary pages, names, and device data out of the repository. Screenshots belong in `docs/screenshots/` and should use made-up writing only. Calendar pin ids and sticker filenames are part of saved data; [assets/stickers/README.md](assets/stickers/README.md) explains how to replace artwork without breaking old pins.
+Please keep real diary pages, names, and device data out of the repository. Screenshots belong in `docs/screenshots/` and should use made-up writing only. Calendar pin ids and sticker ids in `assets/stickers/catalog.json` are part of saved data. [assets/stickers/README.md](assets/stickers/README.md) covers replacing the classic pin artwork.
 
 People working in this tree with a coding agent can start from [AGENTS.md](AGENTS.md).
 
