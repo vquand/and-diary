@@ -18,7 +18,7 @@ Rust draws the shell. Kotlin draws the page you write on.
 - `DiaryActivity` is a `NativeActivity`. The manifest meta-data `android.app.lib_name` is `and_diary`.
 - The writing surface is an Android view embedded as the GPUI platform view named `diary_ink` (`INK_VIEW` in `src/android.rs`). `dev.gpui.mobile.GpuiPlatformView` hosts it. `InkSheet` is that view.
 - Ink uses AndroidX Ink `1.1.0-alpha12` (`ink-authoring`, `ink-brush`, `ink-geometry`, `ink-rendering`, `ink-storage`, `ink-strokes`). The pen is `StockBrushes.pressurePen()`. The brush is a custom round tip whose width responds to pressure and to the distance remaining in the stroke.
-- Rust and Kotlin meet through JNI: opening a day passes the ISO date as a platform-view parameter; changing days and applying settings go through `DiaryActivity` static methods. Day scrubbing from the header is driven by `DayScrubberPill`.
+- Rust and Kotlin meet through JNI. Opening a day passes the ISO date as a platform-view parameter. Rust switches days and drives header scrubbing through `GpuiPlatformView` static methods (`switchDate`, `beginHeaderScrub`, `updateHeaderScrub`, `endHeaderScrub`); `DayScrubberPill` draws the scrubber. `DiaryActivity` statics handle `applySettings`, edge-to-edge insets, system dark mode, the system date format, and the Kotlin-to-Rust `nativeOnDateSelected` callback.
 
 Do not assume the stack in PLAN.md's "fallback" section (Compose for the shell) is what runs. The current shell is GPUI.
 
@@ -39,10 +39,16 @@ app/                        Android application module
     InkEntry.kt             .ink stroke file
     PaperItems.kt           .items JSON, sticker catalog, media copies, hanzi catalog
     PaperItemRenderer.kt    stickers, photos, media, hanzi cards on the page
+    AttachmentPopovers.kt   sticker search popover and photo/video/audio picker
+    ToolboxPopover.kt       ink color and size popover
+    ToolbarChips.kt         pen, brush, and action chips
+    ToolIcons.kt            drawn toolbar icons
+    MediaPlayback.kt        inline audio, video in a dialog
+    DayScrubberPill.kt      hold-to-scrub date pill
     DiaryBrushes.kt         pen, brush, eraser, swatches, sizes
     HanziPracticeDialog.kt  stroke practice UI
     HanziStrokeMatcher.kt   stroke scoring
-    DiaryActivity.kt        NativeActivity, document picker, system bars
+    DiaryActivity.kt        NativeActivity, document picker, system bars, settings JNI
     DiarySettings.kt        palette and toolbar preferences on the Android side
   src/main/java/dev/gpui/mobile/
     GpuiPlatformView.kt     platform view factory
@@ -64,7 +70,7 @@ Shipped on the writing page:
 - Per-tool color and size in shared preferences `diary_toolbox`. Stroke color and brush kind are stored in the `.ink` file, so a later color change affects new strokes only.
 - Undo and redo, 50 snapshots, in memory for the open day. The files on disk hold the latest saved state.
 - Stickers, photo, video, audio, and hanzi cards as paper items.
-- Select: drag to move, corner handle to resize with aspect ratio locked (audio has no resize handle), delete handle. Tap plays video or audio, or opens hanzi practice.
+- Select: drag to move, corner handle to resize with the aspect ratio locked (audio has no resize handle), delete handle. Tap an audio clip to play it on the page, a video to open it in a dialog, or a hanzi card to practice.
 - The page is one ruled sheet, about two viewports tall (`sheetHeight` starts at `height * 2`). Horizontal guides are drawn every 32dp. There is no paper-template picker and no multi-section page.
 - **Delete this diary** clears that day's ink, items, and copied media after confirmation. It does not remove the calendar pin.
 

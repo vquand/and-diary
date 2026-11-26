@@ -12,10 +12,10 @@ Diary is for people who want a private handwriting journal on a tablet: daily pa
 - Erase with the **Eraser**, or hold the side button on an S Pen to erase while the button is down. **Undo** and **Redo** cover the last 50 changes.
 - Scroll the ruled page with a finger. Turn on **Finger** when you want to draw with a fingertip, which is handy on a phone.
 - Drop in stickers from five packs (capybara, lop rabbit, dogs, fluffy cats, and a classic set: 61 in all). Search by name or a tag such as happy, sleepy, or rain.
-- Attach a photo, video, or audio clip from the document picker. The app keeps its own copy. **Select** moves an item, resizes it with the corner handle (the shape stays in proportion), or deletes it. Tap a video or audio clip to play it on the page.
+- Attach a photo, video, or audio clip from the document picker. The app keeps its own copy. **Select** moves an item, resizes it with the corner handle (the shape stays in proportion; audio has no resize handle), or deletes it. Tap an audio clip to play it on the page, or a video to open it in a player.
 - Add a Chinese practice card. Each card is a 田字格 with pinyin, Hán-Việt, and a short meaning. You can animate the stroke order, show a hint, and trace the strokes. A finished card (any score above zero) leaves a small badge on that calendar day. The bundled set has twenty characters, starting with 永.
 - Step between days with the arrows, or hold the date and slide sideways to scrub. The header can follow the system date format, or a format you pick.
-- Long-press a date to pin it with a star, heart, flower, weather mark, or a small creature. Pins and writing dots are separate. Choose **Delete this diary** in the **⋯** menu to clear that day's page after a confirmation.
+- Long-press a date to pin it with a star, heart, flower, an important mark, a weather mark, or a small creature. Pins and writing dots are separate. Choose **Delete this diary** in the **⋯** menu to clear that day's page after a confirmation.
 - Pick a warm paper light theme, a night ink dark theme, or follow the system. The day toolbar can show icons, labels, or both.
 
 The calendar uses serif month titles, a brushed underline, and a hand-drawn grid. The writing page is warm ivory in the light theme, with faint horizontal rules.
@@ -32,7 +32,7 @@ These are captures from a tablet-sized emulator. The sentences are made-up demo 
 
 *A day page: pen, brush, stickers, and a character card on the same sheet.*
 
-![Sticker picker open on the capybara pack, with search and mood tags.](docs/screenshots/stickers.png)
+![Sticker picker on the All tab, with capybara stickers first, search, and mood tags.](docs/screenshots/stickers.png)
 
 *Stickers can be searched and filtered by pack.*
 
@@ -74,7 +74,7 @@ The app asks for no network permission and does not create an account.
 2. Tap a date. The ruled page for that day opens.
 3. Write with the stylus. Switch between **Pen** and **Brush**, and tap the size chip (it shows something like `2.5dp`) to change ink color and thickness.
 4. Use a finger to scroll down the page. The sheet is about two screens tall.
-5. Add a sticker, a photo, a video, an audio clip, or a character card from the toolbar. **Select** moves or resizes what you added.
+5. Add a sticker, a photo, a video, an audio clip, or a character card from the toolbar. **Select** moves what you added, and resizes anything except audio.
 6. Use the arrows beside the date, or hold the date and slide, to visit another day. Writing saves as you go.
 7. Tap **Calendar** to return to the month. Long-press a date to add, replace, or remove its pin.
 8. Open **Settings** from the calendar or from a day to change theme, toolbar labels, and date format.
