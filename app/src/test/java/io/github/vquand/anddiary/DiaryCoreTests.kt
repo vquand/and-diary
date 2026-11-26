@@ -193,4 +193,97 @@ class DiaryCoreTests {
             LassoGeometry.sanitizeExportFileName("   ", "fallback", "jpg"),
         )
     }
+
+    @Test
+    fun rotatedResizeGrowsOutwardAndAnchorsTopLeftAtAnyAngle() {
+        // At 180 degrees, dragging bottom-right outward is negative screen dx.
+        val beforeCorners = LassoGeometry.rotatedRectCorners(100f, 100f, 80f, 40f, 180f)
+        val resized180 = LassoGeometry.resizeRotatedRect(
+            x = 100f,
+            y = 100f,
+            width = 80f,
+            height = 40f,
+            rotationDeg = 180f,
+            dx = -40f,
+            dy = 0f,
+            minWidth = 20f,
+            maxWidth = 400f,
+        )
+        assertEquals(120f, resized180[2], 0.01f)
+        assertEquals(60f, resized180[3], 0.01f)
+        val afterCorners = LassoGeometry.rotatedRectCorners(resized180[0], resized180[1], resized180[2], resized180[3], 180f)
+        // Rotated top-left corner (index 0) must remain anchored in paper space.
+        assertEquals(beforeCorners[0].first, afterCorners[0].first, 0.05f)
+        assertEquals(beforeCorners[0].second, afterCorners[0].second, 0.05f)
+
+        // At 90 degrees clockwise, outward along local +X is screen +Y.
+        val resized90 = LassoGeometry.resizeRotatedRect(
+            x = 100f,
+            y = 100f,
+            width = 80f,
+            height = 80f,
+            rotationDeg = 90f,
+            dx = 0f,
+            dy = 30f,
+            minWidth = 20f,
+            maxWidth = 400f,
+        )
+        assertEquals(110f, resized90[2], 0.01f)
+    }
+
+    @Test
+    fun exportDimensionsScaleLargeSelectionsWithoutClipping() {
+        val normal = SelectionExporter.computeExportDimensions(400f, 300f, maxDim = 2048)
+        assertEquals(2f, normal.renderScale, 0.001f)
+        assertEquals(800, normal.width)
+        assertEquals(600, normal.height)
+
+        // Tall selection > 4096 paper px must scale below 0.5x so the entire height fits in 2048px.
+        val tall = SelectionExporter.computeExportDimensions(1000f, 5000f, maxDim = 2048)
+        assertEquals(2048f / 5000f, tall.renderScale, 0.001f)
+        assertEquals(2048, tall.height)
+        assertEquals(410, tall.width)
+        assertTrue(tall.width <= 2048 && tall.height <= 2048)
+    }
+
+    @Test
+    fun clampItemToSheetKeepsItemsReachable() {
+        val (x1, y1) = LassoGeometry.clampItemToSheet(-50f, -20f, 80f, 80f, 600f, 1200f)
+        assertEquals(0f, x1, 0.01f)
+        assertEquals(0f, y1, 0.01f)
+
+        val (x2, y2) = LassoGeometry.clampItemToSheet(700f, 1300f, 80f, 80f, 600f, 1200f)
+        assertEquals(520f, x2, 0.01f)
+        assertEquals(1120f, y2, 0.01f)
+    }
+
+    @Test
+    fun paperItemDefaultsRotationToZeroAndComputesRotatedBounds() {
+        val unrotated = PaperItem(
+            id = "s1",
+            kind = PaperItemKind.STICKER,
+            ref = "star",
+            label = "Star",
+            durationMs = 0L,
+            x = 10f,
+            y = 20f,
+            width = 100f,
+            height = 40f,
+        )
+        assertEquals(0f, unrotated.rotation, 0.001f)
+
+        val rotated = unrotated.copy(rotation = 90f)
+        val bounds = LassoGeometry.rotatedRectBounds(
+            rotated.x,
+            rotated.y,
+            rotated.width,
+            rotated.height,
+            rotated.rotation,
+        )
+        // Center is (60, 40); rotating 100x40 by 90 deg yields 40x100 centered at (60, 40).
+        assertEquals(40f, bounds[0], 0.05f)
+        assertEquals(-10f, bounds[1], 0.05f)
+        assertEquals(80f, bounds[2], 0.05f)
+        assertEquals(90f, bounds[3], 0.05f)
+    }
 }

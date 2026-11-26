@@ -117,6 +117,55 @@ internal object LassoGeometry {
     }
 
     /**
+     * Resizes a rotated rectangle by a screen-space drag delta (dx, dy) on its bottom-right handle,
+     * preserving its aspect ratio and keeping its rotated top-left corner anchored in place.
+     * Returns floatArrayOf(newX, newY, newWidth, newHeight).
+     */
+    fun resizeRotatedRect(
+        x: Float,
+        y: Float,
+        width: Float,
+        height: Float,
+        rotationDeg: Float,
+        dx: Float,
+        dy: Float,
+        minWidth: Float,
+        maxWidth: Float,
+    ): FloatArray {
+        val aspect = if (width > 0f) height / width else 1f
+        val (localDx, _) = rotatePoint(dx, dy, 0f, 0f, -rotationDeg)
+        val clampedMax = maxWidth.coerceAtLeast(minWidth)
+        val newW = (width + localDx).coerceIn(minWidth, clampedMax)
+        val newH = (newW * aspect).coerceAtLeast(minWidth * aspect)
+
+        val halfDw = (newW - width) / 2f
+        val halfDh = (newH - height) / 2f
+        val (shiftX, shiftY) = rotatePoint(halfDw, halfDh, 0f, 0f, rotationDeg)
+        val oldCx = x + width / 2f
+        val oldCy = y + height / 2f
+        val newCx = oldCx + shiftX
+        val newCy = oldCy + shiftY
+        return floatArrayOf(newCx - newW / 2f, newCy - newH / 2f, newW, newH)
+    }
+
+    /**
+     * Clamps an item's top-left (x, y) so its center stays within the sheet bounds
+     * and the item remains reachable.
+     */
+    fun clampItemToSheet(
+        x: Float,
+        y: Float,
+        width: Float,
+        height: Float,
+        sheetWidth: Float,
+        sheetHeight: Float,
+    ): Pair<Float, Float> {
+        val maxX = (sheetWidth - width).coerceAtLeast(0f)
+        val maxY = (sheetHeight - height).coerceAtLeast(0f)
+        return x.coerceIn(0f, maxX) to y.coerceIn(0f, maxY)
+    }
+
+    /**
      * Sanitizes a user-edited export filename and ensures it ends with `.$extension`.
      */
     fun sanitizeExportFileName(rawName: String, fallbackBase: String, extension: String): String {

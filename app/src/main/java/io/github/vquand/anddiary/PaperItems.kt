@@ -3,6 +3,8 @@ package io.github.vquand.anddiary
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Matrix
+import android.media.ExifInterface
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Build
@@ -134,25 +136,7 @@ internal class PaperItemsStore(private val context: Context, val date: LocalDate
             if (itemsFile.baseFile.exists()) throw error
             return emptyList()
         }
-        val array = JSONArray(String(bytes, Charsets.UTF_8))
-        return List(array.length()) { index ->
-            val obj = array.getJSONObject(index)
-            val kind = PaperItemKind.fromWire(obj.getString("kind"))
-                ?: throw IOException("Unknown paper item kind")
-            PaperItem(
-                id = obj.getString("id"),
-                kind = kind,
-                ref = obj.getString("ref"),
-                label = obj.optString("label", ""),
-                durationMs = obj.optLong("durationMs", 0L),
-                x = obj.getDouble("x").toFloat(),
-                y = obj.getDouble("y").toFloat(),
-                width = obj.getDouble("width").toFloat(),
-                height = obj.getDouble("height").toFloat(),
-                score = obj.optInt("score", 0),
-                rotation = obj.optDouble("rotation", 0.0).toFloat(),
-            )
-        }
+        return decodeItemsJson(String(bytes, Charsets.UTF_8))
     }
 
     fun write(items: List<PaperItem>) {
@@ -162,26 +146,10 @@ internal class PaperItemsStore(private val context: Context, val date: LocalDate
             return
         }
         itemsFile.baseFile.parentFile?.mkdirs()
-        val array = JSONArray()
-        for (item in items) {
-            array.put(
-                JSONObject()
-                    .put("id", item.id)
-                    .put("kind", item.kind.wire)
-                    .put("ref", item.ref)
-                    .put("label", item.label)
-                    .put("durationMs", item.durationMs)
-                    .put("x", item.x.toDouble())
-                    .put("y", item.y.toDouble())
-                    .put("width", item.width.toDouble())
-                    .put("height", item.height.toDouble())
-                    .put("score", item.score)
-                    .put("rotation", item.rotation.toDouble()),
-            )
-        }
+        val payload = encodeItemsJson(items).toByteArray(Charsets.UTF_8)
         val stream = itemsFile.startWrite()
         try {
-            stream.write(array.toString().toByteArray(Charsets.UTF_8))
+            stream.write(payload)
             stream.flush()
             itemsFile.finishWrite(stream)
         } catch (error: Exception) {
@@ -190,10 +158,15 @@ internal class PaperItemsStore(private val context: Context, val date: LocalDate
         }
     }
 
-    fun clearAll() {
+    fun clearMetadataAndCache() {
         itemsFile.delete()
+        synchronized(mediaBitmaps) {
+            mediaBitmaps.clear()
+        }
+    }
+
+    fun deleteMediaDir() {
         mediaDir.deleteRecursively()
-        mediaBitmaps.clear()
     }
 
     fun clearPendingImport(filename: String) {
@@ -460,6 +433,15 @@ internal class PaperItemsStore(private val context: Context, val date: LocalDate
         }
 
     private fun importPhotoAsWebp(uri: Uri, destination: File) {
+        val orientation = runCatching {
+            context.contentResolver.openInputStream(uri)?.use { input ->
+                ExifInterface(input).getAttributeInt(
+                    ExifInterface.TAG_ORIENTATION,
+                    ExifInterface.ORIENTATION_NORMAL,
+                )
+            }
+        }.getOrNull() ?: ExifInterface.ORIENTATION_NORMAL
+
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         context.contentResolver.openInputStream(uri)?.use { input ->
             BitmapFactory.decodeStream(input, null, bounds)
@@ -467,24 +449,47 @@ internal class PaperItemsStore(private val context: Context, val date: LocalDate
         val largest = max(bounds.outWidth, bounds.outHeight)
         var sample = 1
         while (largest / sample > 2048) sample *= 2
-        val bitmap = context.contentResolver.openInputStream(uri)?.use { input ->
+        val decoded = context.contentResolver.openInputStream(uri)?.use { input ->
             BitmapFactory.decodeStream(input, null, BitmapFactory.Options().apply { inSampleSize = sample })
         } ?: throw IOException("Could not decode selected image")
+        val oriented = applyExifOrientation(decoded, orientation)
         try {
-            val format = if (Build.VERSION.SDK_INT >= 30) {
-                Bitmap.CompressFormat.WEBP_LOSSY
-            } else {
-                @Suppress("DEPRECATION")
-                Bitmap.CompressFormat.WEBP
-            }
+            val format = webpCompressFormat()
             destination.outputStream().use { output ->
-                if (!bitmap.compress(format, 88, output)) {
+                if (!oriented.compress(format, 88, output)) {
                     throw IOException("Could not encode image as WebP")
                 }
             }
         } finally {
-            bitmap.recycle()
+            if (oriented !== decoded) oriented.recycle()
+            decoded.recycle()
         }
+    }
+
+    private fun applyExifOrientation(bitmap: Bitmap, orientation: Int): Bitmap {
+        val matrix = Matrix()
+        when (orientation) {
+            ExifInterface.ORIENTATION_FLIP_HORIZONTAL -> matrix.setScale(-1f, 1f)
+            ExifInterface.ORIENTATION_ROTATE_180 -> matrix.setRotate(180f)
+            ExifInterface.ORIENTATION_FLIP_VERTICAL -> {
+                matrix.setRotate(180f)
+                matrix.postScale(-1f, 1f)
+            }
+            ExifInterface.ORIENTATION_TRANSPOSE -> {
+                matrix.setRotate(90f)
+                matrix.postScale(-1f, 1f)
+            }
+            ExifInterface.ORIENTATION_ROTATE_90 -> matrix.setRotate(90f)
+            ExifInterface.ORIENTATION_TRANSVERSE -> {
+                matrix.setRotate(-90f)
+                matrix.postScale(-1f, 1f)
+            }
+            ExifInterface.ORIENTATION_ROTATE_270 -> matrix.setRotate(270f)
+            else -> return bitmap
+        }
+        return runCatching {
+            Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+        }.getOrDefault(bitmap)
     }
 
     private fun extensionFor(displayName: String?, mime: String?, kind: PaperItemKind): String {
@@ -493,10 +498,9 @@ internal class PaperItemsStore(private val context: Context, val date: LocalDate
         val fromName = displayName?.substringAfterLast('.', "")?.lowercase(Locale.US)
         if (!fromName.isNullOrBlank() && fromName.length <= 5) return fromName
         return when (kind) {
-            PaperItemKind.PHOTO -> "webp"
             PaperItemKind.VIDEO -> "mp4"
             PaperItemKind.AUDIO -> "m4a"
-            PaperItemKind.STICKER, PaperItemKind.HANZI -> "webp"
+            PaperItemKind.PHOTO, PaperItemKind.STICKER, PaperItemKind.HANZI -> "webp"
         }
     }
 
@@ -505,6 +509,57 @@ internal class PaperItemsStore(private val context: Context, val date: LocalDate
         private var cachedHanzi: HanziCatalog? = null
         private val sheetBitmaps = mutableMapOf<String, Bitmap?>()
         private val stickerBitmaps = mutableMapOf<String, Bitmap?>()
+
+        fun webpCompressFormat(): Bitmap.CompressFormat =
+            if (Build.VERSION.SDK_INT >= 30) {
+                Bitmap.CompressFormat.WEBP_LOSSY
+            } else {
+                @Suppress("DEPRECATION")
+                Bitmap.CompressFormat.WEBP
+            }
+
+        fun encodeItemsJson(items: List<PaperItem>): String {
+            val array = JSONArray()
+            for (item in items) {
+                array.put(
+                    JSONObject()
+                        .put("id", item.id)
+                        .put("kind", item.kind.wire)
+                        .put("ref", item.ref)
+                        .put("label", item.label)
+                        .put("durationMs", item.durationMs)
+                        .put("x", item.x.toDouble())
+                        .put("y", item.y.toDouble())
+                        .put("width", item.width.toDouble())
+                        .put("height", item.height.toDouble())
+                        .put("score", item.score)
+                        .put("rotation", item.rotation.toDouble()),
+                )
+            }
+            return array.toString()
+        }
+
+        fun decodeItemsJson(json: String): List<PaperItem> {
+            val array = JSONArray(json)
+            return List(array.length()) { index ->
+                val obj = array.getJSONObject(index)
+                val kind = PaperItemKind.fromWire(obj.getString("kind"))
+                    ?: throw IOException("Unknown paper item kind")
+                PaperItem(
+                    id = obj.getString("id"),
+                    kind = kind,
+                    ref = obj.getString("ref"),
+                    label = obj.optString("label", ""),
+                    durationMs = obj.optLong("durationMs", 0L),
+                    x = obj.getDouble("x").toFloat(),
+                    y = obj.getDouble("y").toFloat(),
+                    width = obj.getDouble("width").toFloat(),
+                    height = obj.getDouble("height").toFloat(),
+                    score = obj.optInt("score", 0),
+                    rotation = obj.optDouble("rotation", 0.0).toFloat(),
+                )
+            }
+        }
 
         fun loadHanziCatalog(context: Context): HanziCatalog {
             cachedHanzi?.let { return it }

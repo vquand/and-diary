@@ -302,20 +302,7 @@ internal class PaperItemRenderer(
         val pad = 4f * density
         rect.set(item.x - pad, item.y - pad, item.x + item.width + pad, item.y + item.height + pad)
         canvas.drawRoundRect(rect, 6f * density, 6f * density, selectStroke)
-
-        val handleR = 12f * density
-        badgeFill.color = paperPalette.danger
-        canvas.drawCircle(rect.right, rect.top, handleR, badgeFill)
-        val baseline = rect.top - (badgeText.descent() + badgeText.ascent()) / 2f
-        canvas.drawText("×", rect.right, baseline, badgeText)
-
-        if (item.kind != PaperItemKind.AUDIO) {
-            badgeFill.color = paperPalette.accent
-            canvas.drawCircle(rect.right, rect.bottom, handleR, badgeFill)
-            cardStroke.color = paperPalette.paper
-            canvas.drawCircle(rect.right, rect.bottom, handleR - 2.5f * density, cardStroke)
-            cardStroke.color = paperPalette.rule
-        }
+        drawCornerHandles(canvas, rect, allowResize = item.kind != PaperItemKind.AUDIO)
         if (rotated) {
             canvas.restoreToCount(saveCount)
         }
@@ -326,18 +313,21 @@ internal class PaperItemRenderer(
         rect.set(bounds.left - pad, bounds.top - pad, bounds.right + pad, bounds.bottom + pad)
         canvas.drawRoundRect(rect, 8f * density, 8f * density, lassoFill)
         canvas.drawRoundRect(rect, 8f * density, 8f * density, lassoStroke)
+        drawCornerHandles(canvas, rect, allowResize = allowResize)
+    }
 
+    private fun drawCornerHandles(canvas: Canvas, box: RectF, allowResize: Boolean) {
         val handleR = 12f * density
         badgeFill.color = paperPalette.danger
-        canvas.drawCircle(rect.right, rect.top, handleR, badgeFill)
-        val baseline = rect.top - (badgeText.descent() + badgeText.ascent()) / 2f
-        canvas.drawText("×", rect.right, baseline, badgeText)
+        canvas.drawCircle(box.right, box.top, handleR, badgeFill)
+        val baseline = box.top - (badgeText.descent() + badgeText.ascent()) / 2f
+        canvas.drawText("×", box.right, baseline, badgeText)
 
         if (allowResize) {
             badgeFill.color = paperPalette.accent
-            canvas.drawCircle(rect.right, rect.bottom, handleR, badgeFill)
+            canvas.drawCircle(box.right, box.bottom, handleR, badgeFill)
             cardStroke.color = paperPalette.paper
-            canvas.drawCircle(rect.right, rect.bottom, handleR - 2.5f * density, cardStroke)
+            canvas.drawCircle(box.right, box.bottom, handleR - 2.5f * density, cardStroke)
             cardStroke.color = paperPalette.rule
         }
     }

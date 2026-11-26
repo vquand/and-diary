@@ -61,9 +61,29 @@ internal data class SelectionExportSnapshot(
     val items: List<PaperItem>,
 )
 
+internal data class ExportDimensions(
+    val width: Int,
+    val height: Int,
+    val renderScale: Float,
+)
+
 internal object SelectionExporter {
-    private const val MAX_EXPORT_DIM = 2048
-    private const val DEFAULT_RENDER_SCALE = 2f
+    const val MAX_EXPORT_DIM = 2048
+    const val DEFAULT_RENDER_SCALE = 2f
+
+    fun computeExportDimensions(
+        rawWidth: Float,
+        rawHeight: Float,
+        maxDim: Int = MAX_EXPORT_DIM,
+    ): ExportDimensions {
+        val safeW = rawWidth.coerceAtLeast(1f)
+        val safeH = rawHeight.coerceAtLeast(1f)
+        val maxRaw = max(safeW, safeH)
+        val renderScale = minOf(DEFAULT_RENDER_SCALE, maxDim.toFloat() / maxRaw)
+        val outW = (safeW * renderScale).roundToInt().coerceIn(1, maxDim)
+        val outH = (safeH * renderScale).roundToInt().coerceIn(1, maxDim)
+        return ExportDimensions(outW, outH, renderScale)
+    }
 
     fun suggestedBaseName(date: LocalDate): String =
         "diary_${date}_${UUID.randomUUID().toString().take(6)}"
@@ -317,10 +337,10 @@ internal object SelectionExporter {
         )
         val rawW = crop.width().coerceAtLeast(16f * density)
         val rawH = crop.height().coerceAtLeast(16f * density)
-        val maxRaw = max(rawW, rawH)
-        val renderScale = minOf(DEFAULT_RENDER_SCALE, MAX_EXPORT_DIM / maxRaw).coerceAtLeast(0.5f)
-        val outW = (rawW * renderScale).roundToInt().coerceIn(1, MAX_EXPORT_DIM)
-        val outH = (rawH * renderScale).roundToInt().coerceIn(1, MAX_EXPORT_DIM)
+        val dims = computeExportDimensions(rawW, rawH)
+        val renderScale = dims.renderScale
+        val outW = dims.width
+        val outH = dims.height
 
         // Ensure all media/sticker bitmaps are decoded before drawing on this background thread.
         for (item in snapshot.items) {
@@ -376,12 +396,7 @@ internal object SelectionExporter {
         val compressFormat = when (request.format) {
             ExportFormat.PNG -> Bitmap.CompressFormat.PNG
             ExportFormat.JPEG -> Bitmap.CompressFormat.JPEG
-            ExportFormat.WEBP -> if (Build.VERSION.SDK_INT >= 30) {
-                Bitmap.CompressFormat.WEBP_LOSSY
-            } else {
-                @Suppress("DEPRECATION")
-                Bitmap.CompressFormat.WEBP
-            }
+            ExportFormat.WEBP -> PaperItemsStore.webpCompressFormat()
         }
         val quality = if (request.format == ExportFormat.PNG) 100 else 92
 
@@ -414,13 +429,10 @@ internal object SelectionExporter {
                 Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES),
                 "Diary",
             )
-            val targetDir = if (picturesDir.exists() || picturesDir.mkdirs()) {
-                picturesDir
-            } else {
-                context.getExternalFilesDir(Environment.DIRECTORY_PICTURES)
-                    ?: throw IOException("No writable pictures directory")
+            if (!picturesDir.exists() && !picturesDir.mkdirs()) {
+                throw IOException("Could not create Gallery Pictures/Diary directory")
             }
-            val file = File(targetDir, request.fileName)
+            val file = File(picturesDir, request.fileName)
             file.outputStream().use { out ->
                 if (!bitmap.compress(compressFormat, quality, out)) {
                     throw IOException("Bitmap compression failed")

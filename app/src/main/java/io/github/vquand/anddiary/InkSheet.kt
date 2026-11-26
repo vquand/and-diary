@@ -395,31 +395,47 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
     }
 
     private fun exportSelectionAsync(snapshot: SelectionExportSnapshot, request: ExportRequest) {
-        val targetStore = itemsStore
-        ioExecutor.execute {
-            try {
-                val savedName = SelectionExporter.exportToGallery(
-                    context = context,
-                    snapshot = snapshot,
-                    request = request,
-                    itemsStore = targetStore,
-                    density = density,
-                    paperPalette = DiaryPalette.LIGHT,
-                )
-                post {
-                    Toast.makeText(
-                        context,
-                        context.getString(R.string.export_saved, savedName),
-                        Toast.LENGTH_SHORT,
-                    ).show()
-                }
-            } catch (error: Exception) {
-                Log.e("DiaryExport", "Could not export selection", error)
-                post {
-                    Toast.makeText(context, R.string.export_failed, Toast.LENGTH_LONG).show()
+        val runExport = {
+            val targetStore = itemsStore
+            ioExecutor.execute {
+                try {
+                    val savedName = SelectionExporter.exportToGallery(
+                        context = context,
+                        snapshot = snapshot,
+                        request = request,
+                        itemsStore = targetStore,
+                        density = density,
+                        paperPalette = DiaryPalette.LIGHT,
+                    )
+                    post {
+                        Toast.makeText(
+                            context,
+                            context.getString(R.string.export_saved, savedName),
+                            Toast.LENGTH_SHORT,
+                        ).show()
+                    }
+                } catch (error: Exception) {
+                    Log.e("DiaryExport", "Could not export selection", error)
+                    post {
+                        Toast.makeText(context, R.string.export_failed, Toast.LENGTH_LONG).show()
+                    }
                 }
             }
         }
+        if (Build.VERSION.SDK_INT < 29) {
+            val activity = context as? DiaryActivity
+            if (activity != null) {
+                activity.requestLegacyStoragePermission { granted ->
+                    if (granted) {
+                        runExport()
+                    } else {
+                        Toast.makeText(context, R.string.export_permission_denied, Toast.LENGTH_LONG).show()
+                    }
+                }
+                return
+            }
+        }
+        runExport()
     }
 
     private fun openStickerDialog() {
@@ -698,6 +714,7 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
         private var lassoing: Lassoing? = null
         private var twoFinger: TwoFingerTransform? = null
         private var mediaTap: MediaTap? = null
+        private var pendingDeselectPointerId: Int? = null
         private var offset = 0f
         private var sheetHeight = 0f
 
@@ -938,7 +955,7 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                 val selRestore = canvas.save()
                 canvas.concat(liveMatrix)
                 for (item in items) {
-                    if (item.id in selectedItemIds) {
+                    if (item.id in selectedItemIds && (item.kind != PaperItemKind.AUDIO || transform.scale == 1f)) {
                         itemRenderer.drawItem(canvas, item, itemsStore, mediaPlayback.playingAudioId, ::requestItemBitmap)
                     }
                 }
@@ -950,6 +967,23 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                 singleSelectedItem()?.let { itemRenderer.drawSelectionHandles(canvas, it) }
                     ?: selectionBounds?.let { itemRenderer.drawAreaSelectionHandles(canvas, it, selectionAllowsResize()) }
                 canvas.restoreToCount(selRestore)
+                // Draw selected AUDIO items without scaling so live preview matches committed size.
+                if (transform.scale != 1f) {
+                    val pt = FloatArray(2)
+                    for (item in items) {
+                        if (item.id in selectedItemIds && item.kind == PaperItemKind.AUDIO) {
+                            pt[0] = item.x + item.width / 2f
+                            pt[1] = item.y + item.height / 2f
+                            liveMatrix.mapPoints(pt)
+                            val previewItem = item.copy(
+                                x = pt[0] - item.width / 2f,
+                                y = pt[1] - item.height / 2f,
+                                rotation = LassoGeometry.normalizeAngle(item.rotation + transform.rotationDeg),
+                            )
+                            itemRenderer.drawItem(canvas, previewItem, itemsStore, mediaPlayback.playingAudioId, ::requestItemBitmap)
+                        }
+                    }
+                }
             } else {
                 for (item in items) {
                     itemRenderer.drawItem(canvas, item, itemsStore, mediaPlayback.playingAudioId, ::requestItemBitmap)
@@ -1004,9 +1038,11 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                     if (activeTool == DiaryTool.SELECT && first && !stylusEraser) {
                         if (handleSelectDown(pointer, paperX, paperY)) return true
                         if (stylus || fingerInk) {
+                            clearSelection()
                             lassoing = Lassoing(pointer, mutableListOf(paperX to paperY))
                             invalidate()
                         } else if (tool == MotionEvent.TOOL_TYPE_FINGER) {
+                            if (hasSelection) pendingDeselectPointerId = pointer
                             scrolling = Scrolling(pointer, event.getY(index), offset)
                         }
                         return true
@@ -1018,6 +1054,7 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
 
                     if (drawing == null && erasing == null && shouldErase) {
                         cancelGesture()
+                        clearSelection()
                         erasing = Erasing(pointer, paperX, paperY, strokes)
                         eraseSegment(paperX, paperY, paperX, paperY)
                         invalidate()
@@ -1137,6 +1174,7 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                             if (isStylusEraserButton(event, event.getToolType(pointerIndex))) {
                                 ink.cancelStroke(stroke.strokeId, event)
                                 drawing = null
+                                clearSelection()
                                 val cx = event.getX(pointerIndex)
                                 val cy = event.getY(pointerIndex) + offset
                                 erasing = Erasing(stroke.pointerId, cx, cy, strokes)
@@ -1171,6 +1209,9 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                             val moveY = event.getY(pointerIndex)
                             if (abs(scroll.downY - moveY) > 6f * density) {
                                 mediaTap = null
+                                if (pendingDeselectPointerId == scroll.pointerId) {
+                                    pendingDeselectPointerId = null
+                                }
                             }
                             offset = (scroll.startOffset + scroll.downY - moveY)
                                 .coerceIn(0f, maxOffset())
@@ -1272,6 +1313,10 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                     if (scrolling?.pointerId == pointer) {
                         if (canceled) cancelGesture() else scrolling = null
                     }
+                    if (pendingDeselectPointerId == pointer) {
+                        pendingDeselectPointerId = null
+                        if (!canceled) clearSelection()
+                    }
                 }
 
                 MotionEvent.ACTION_CANCEL -> cancelGesture()
@@ -1298,6 +1343,7 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
             lassoing = null
             scrolling = null
             mediaTap = null
+            pendingDeselectPointerId = null
             liveTransform = null
 
             val x1 = event.getX(0)
@@ -1395,9 +1441,17 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                 val newW = (item.width * itemScale).coerceAtLeast(minW)
                 val ratio = if (item.width > 0f) newW / item.width else 1f
                 val newH = (item.height * ratio).coerceAtLeast(24f * density)
-                item.copy(
+                val (clampedX, clampedY) = LassoGeometry.clampItemToSheet(
                     x = pt[0] - newW / 2f,
                     y = pt[1] - newH / 2f,
+                    width = newW,
+                    height = newH,
+                    sheetWidth = width.toFloat(),
+                    sheetHeight = sheetHeight,
+                )
+                item.copy(
+                    x = clampedX,
+                    y = clampedY,
                     width = newW,
                     height = newH,
                     rotation = LassoGeometry.normalizeAngle(item.rotation + transform.rotationDeg),
@@ -1479,8 +1533,15 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                 val top = single.y - pad
                 val bottom = single.y + single.height + pad
 
-                // Delete handle
-                if (hypot((localX - right).toDouble(), (localY - top).toDouble()) <= handleHitR) {
+                val distDelete = hypot((localX - right).toDouble(), (localY - top).toDouble()).toFloat()
+                val distResize = if (single.kind != PaperItemKind.AUDIO) {
+                    hypot((localX - right).toDouble(), (localY - bottom).toDouble()).toFloat()
+                } else {
+                    Float.POSITIVE_INFINITY
+                }
+
+                // Pick the closer handle when both are within hit radius
+                if (distDelete <= handleHitR && distDelete <= distResize) {
                     if (mediaPlayback.playingAudioId == single.id) stopAudio()
                     val previous = HistorySnapshot(strokes, items)
                     val remaining = items.filterNot { it.id == single.id }
@@ -1491,10 +1552,7 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                     return true
                 }
 
-                // Resize handle
-                if (single.kind != PaperItemKind.AUDIO &&
-                    hypot((localX - right).toDouble(), (localY - bottom).toDouble()) <= handleHitR
-                ) {
+                if (distResize <= handleHitR) {
                     itemDrag = ItemDrag(pointer, single.id, DragMode.RESIZE, paperX, paperY, single, items)
                     return true
                 }
@@ -1514,8 +1572,15 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                     val top = bounds.top - pad
                     val bottom = bounds.bottom + pad
 
-                    // Delete entire selected area
-                    if (hypot((paperX - right).toDouble(), (paperY - top).toDouble()) <= handleHitR) {
+                    val distDelete = hypot((paperX - right).toDouble(), (paperY - top).toDouble()).toFloat()
+                    val distResize = if (selectionAllowsResize()) {
+                        hypot((paperX - right).toDouble(), (paperY - bottom).toDouble()).toFloat()
+                    } else {
+                        Float.POSITIVE_INFINITY
+                    }
+
+                    // Pick the closer handle when both are within hit radius
+                    if (distDelete <= handleHitR && distDelete <= distResize) {
                         if (mediaPlayback.playingAudioId in selectedItemIds) stopAudio()
                         val previous = HistorySnapshot(strokes, items)
                         val remainingStrokes = strokes.filterIndexed { idx, _ -> idx !in selectedStrokeIndices }
@@ -1527,10 +1592,7 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                         return true
                     }
 
-                    // Resize entire selected area
-                    if (selectionAllowsResize() &&
-                        hypot((paperX - right).toDouble(), (paperY - bottom).toDouble()) <= handleHitR
-                    ) {
+                    if (distResize <= handleHitR) {
                         areaDrag = AreaDrag(pointer, DragMode.RESIZE, paperX, paperY, RectF(bounds), strokes, items)
                         return true
                     }
@@ -1562,7 +1624,6 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                 return true
             }
 
-            clearSelection()
             return false
         }
 
@@ -1604,12 +1665,20 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                 }
 
                 DragMode.RESIZE -> {
-                    val aspect = if (base.width > 0f) base.height / base.width else 1f
                     val minW = 44f * density
-                    val maxW = (width - base.x - 8f * density).coerceAtLeast(minW)
-                    val newW = (base.width + dx).coerceIn(minW, maxW)
-                    val newH = (newW * aspect).coerceAtLeast(minW * aspect)
-                    base.copy(width = newW, height = newH)
+                    val maxW = (width - 16f * density).coerceAtLeast(minW)
+                    val resized = LassoGeometry.resizeRotatedRect(
+                        x = base.x,
+                        y = base.y,
+                        width = base.width,
+                        height = base.height,
+                        rotationDeg = base.rotation,
+                        dx = dx,
+                        dy = dy,
+                        minWidth = minW,
+                        maxWidth = maxW,
+                    )
+                    base.copy(x = resized[0], y = resized[1], width = resized[2], height = resized[3])
                 }
             }
             items = drag.preItems.map { if (it.id == drag.itemId) updated else it }
@@ -1638,6 +1707,7 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                 invalidate()
             }
             mediaTap = null
+            pendingDeselectPointerId = null
             scrolling?.let {
                 offset = it.startOffset.coerceIn(0f, maxOffset())
                 invalidate()
@@ -1673,7 +1743,9 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
             stopAudio()
             if (save(emptyList(), emptyList(), allowUnreadable = true)) {
                 readable = true
-                itemsStore.clearAll()
+                val storeToClear = itemsStore
+                storeToClear.clearMetadataAndCache()
+                ioExecutor.execute { runCatching { storeToClear.deleteMediaDir() } }
                 cancelGesture()
                 finishing.entries.removeAll { it.value === entry }
                 clearSelection()
