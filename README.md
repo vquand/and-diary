@@ -18,7 +18,7 @@ Diary is for people who want a private handwriting journal on a tablet: daily pa
 - Long-press a date to pin it with a star, heart, flower, an important mark, a weather mark, or a small creature. Pins and writing dots are separate. Choose **Delete this diary** in the **⋯** menu to clear that day's page after a confirmation.
 - Pick a warm paper light theme, a night ink dark theme, or follow the system. The day toolbar can show icons, labels, or both.
 
-The calendar uses serif month titles, a brushed underline, and a hand-drawn grid. The writing page is warm ivory in the light theme, with faint horizontal rules.
+The calendar uses serif month titles, a brushed underline, and a hand-drawn grid. The writing page stays warm ivory with faint horizontal rules in both themes. The bars around it follow the theme.
 
 ## Screenshots
 
@@ -93,6 +93,7 @@ Everything lives in the app's private internal storage, which other apps cannot 
 | Copies of photos, video, and audio | `files/media/YYYY-MM-DD/` |
 | Calendar pins | `files/pins/YYYY-MM-DD.pin` |
 | Theme, toolbar, and date format | `files/settings.txt` |
+| Android copy of theme and toolbar | preferences `diary_app_settings` |
 | Pen, brush, and eraser color and size | app preferences `diary_toolbox` |
 
 Attached media is copied into the app. The original file stays where you picked it from. Ink is stored as the app's own stroke records, including the brush and the color used for each stroke.

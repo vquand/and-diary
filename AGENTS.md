@@ -89,13 +89,15 @@ All of this is app-private internal storage (`context.filesDir`). `android:allow
 
 | Path | Format |
 | --- | --- |
-| `files/entries/YYYY-MM-DD.ink` | Custom binary. Magic `0x41444931` (`ADI1`), then a count and records: brush kind (0 pen, 1 soft brush), ARGB color, size, epsilon, AndroidX `StrokeInputBatch` payload. Empty days delete the file. |
+| `files/entries/YYYY-MM-DD.ink` | Big-endian (`DataOutputStream`). Magic `0x41444931` (`ADI1`), then a stroke count, then records. Each record is brush kind (1 byte; 0 pen, 1 soft brush), ARGB color, size, epsilon, payload length (int), then that many AndroidX `StrokeInputBatch` bytes. The 17-byte record header is the kind byte plus four 4-byte fields. Empty days delete the file. |
 | `files/entries/YYYY-MM-DD.items` | JSON array of `{id, kind, ref, label, durationMs, x, y, width, height, score}`. Kinds: `sticker`, `photo`, `video`, `audio`, `hanzi`. |
 | `files/media/YYYY-MM-DD/` | Copies of picked media. Item `ref` is the filename. Unused files are pruned when leaving a day. |
 | `files/pins/YYYY-MM-DD.pin` | One byte, the `Pin` discriminant (1–13). Ids are stable. |
-| `files/settings.txt` | `theme=`, `toolbar=`, `date_format=` lines. Missing file means defaults. |
+| `files/settings.txt` | `theme=`, `toolbar=`, `date_format=` lines. Missing file means defaults. This is the source of truth. |
 
 Writes go through a temp file or `AtomicFile`, then rename. Calendar dots appear only for exact `YYYY-MM-DD.ink` / `.items` names, not for `*.ink.new` or non-canonical dates. Keep that strictness.
+
+Shared preferences sit beside those files. `diary_toolbox` stores pen, brush, and eraser color and size. `diary_app_settings` stores `theme_mode` and `toolbar_mode`, written when Rust calls `applySettings`. It does not store the date format. Treat `files/settings.txt` as the source of truth and the preferences as the Android-side mirror.
 
 Sticker ids in `assets/stickers/catalog.json` are what saved items store. Classic pin artwork filenames match `src/pins.rs` and are `include_bytes!`'d as PNG in `src/stickers.rs`. Renaming a file or reusing an id for different art changes old diaries. See [assets/stickers/README.md](assets/stickers/README.md).
 
@@ -126,8 +128,8 @@ Debug APK: `app/build/outputs/apk/debug/app-debug.apk`.
 
 ## Conventions
 
-- Match the surrounding style. Rust UI colors come from `settings::Palette` (`LIGHT` / `DARK`). The writing surface currently paints with `DiaryPalette.LIGHT` for the paper itself; chrome (toolbar, system bars) follows the active theme.
-- User-visible Android strings go in `app/src/main/res/values/strings.xml`. A lot of calendar and settings copy is hardcoded in Rust. If you add a string, put it where the neighboring copy lives.
+- For new UI, take colors from `settings::Palette` (`LIGHT` / `DARK`) on the Rust side and from `DiaryPalette` on the Android side. The writing sheet, including `PaperItemRenderer`, currently paints with `DiaryPalette.LIGHT`, so the page stays ivory while the toolbar, popovers, header, and system bars follow the theme. `HanziPracticeDialog` is a known exception: it uses its own hardcoded light colors.
+- For new Android copy, add strings in `app/src/main/res/values/strings.xml`. Calendar and settings copy is mostly hardcoded in Rust. `HanziPracticeDialog` and `PaperItemRenderer` also hardcode a few English status lines. Put new copy with the neighboring text instead of adding another hardcoded island.
 - Keep entry files independent of the GPUI shell so a later UI change can still read them.
 - Prefer the existing atomic write pattern for anything stored in `filesDir`.
 - Pin ids, sticker ids, the ink magic number, and the items JSON keys are on-disk formats. Bump them only with a compatible reader.
