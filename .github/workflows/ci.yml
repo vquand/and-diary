@@ -36,12 +36,11 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - uses: android-actions/setup-android@v3
-
       - name: Install Android SDK 36 and NDK 26.3.11579264
         run: |
-          yes | sdkmanager --licenses >/dev/null 2>&1 || true
-          sdkmanager "platforms;android-36" "ndk;26.3.11579264"
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
+          "$SDKMANAGER" "platforms;android-36" "ndk;26.3.11579264"
 
       - uses: gradle/actions/setup-gradle@v4
 
