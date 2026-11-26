@@ -1,5 +1,6 @@
 package io.github.vquand.anddiary
 
+import android.content.Context
 import androidx.ink.brush.Brush
 import androidx.ink.brush.BrushBehavior
 import androidx.ink.brush.BrushFamily
@@ -10,24 +11,114 @@ import androidx.ink.brush.behavior.OutOfRange
 import androidx.ink.brush.behavior.SourceNode
 import androidx.ink.brush.behavior.TargetNode
 
-internal class DiaryBrushes(density: Float) {
-    val pen = Brush.createWithColorIntArgb(StockBrushes.pressurePen(), 0xff283948.toInt(), 2.5f * density, 0.2f)
+internal enum class DiaryTool {
+    PEN,
+    BRUSH,
+    ERASER,
+    SELECT,
+}
 
-    val softBrush = Brush.createWithColorIntArgb(
-        BrushFamily(
-            tip = BrushTip(
-                cornerRounding = 1f,
-                behaviors = listOf(
-                    sizeResponse(SourceNode.Source.NORMALIZED_PRESSURE, 1f, 0.28f),
-                    sizeResponse(SourceNode.Source.DISTANCE_REMAINING_IN_MULTIPLES_OF_BRUSH_SIZE, 1.2f, 0.22f),
-                ),
+internal class DiaryBrushes(context: Context, private val density: Float) {
+    private val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+
+    val penFamily: BrushFamily = StockBrushes.pressurePen()
+
+    val softBrushFamily: BrushFamily = BrushFamily(
+        tip = BrushTip(
+            cornerRounding = 1f,
+            behaviors = listOf(
+                sizeResponse(SourceNode.Source.NORMALIZED_PRESSURE, 1f, 0.28f),
+                sizeResponse(SourceNode.Source.DISTANCE_REMAINING_IN_MULTIPLES_OF_BRUSH_SIZE, 1.2f, 0.22f),
             ),
-            paint = BrushPaint(),
         ),
-        0xff272320.toInt(),
-        12f * density,
-        0.2f,
+        paint = BrushPaint(),
     )
+
+    var penColor: Int = prefs.getInt(KEY_PEN_COLOR, DEFAULT_PEN_COLOR)
+        set(value) {
+            field = value or ALPHA_MASK
+            prefs.edit().putInt(KEY_PEN_COLOR, field).apply()
+        }
+
+    var brushColor: Int = prefs.getInt(KEY_BRUSH_COLOR, DEFAULT_BRUSH_COLOR)
+        set(value) {
+            field = value or ALPHA_MASK
+            prefs.edit().putInt(KEY_BRUSH_COLOR, field).apply()
+        }
+
+    var penSizeDp: Float = prefs.getFloat(KEY_PEN_SIZE, DEFAULT_PEN_SIZE_DP).coerceIn(PEN_MIN_DP, PEN_MAX_DP)
+        set(value) {
+            field = value.coerceIn(PEN_MIN_DP, PEN_MAX_DP)
+            prefs.edit().putFloat(KEY_PEN_SIZE, field).apply()
+        }
+
+    var brushSizeDp: Float = prefs.getFloat(KEY_BRUSH_SIZE, DEFAULT_BRUSH_SIZE_DP).coerceIn(BRUSH_MIN_DP, BRUSH_MAX_DP)
+        set(value) {
+            field = value.coerceIn(BRUSH_MIN_DP, BRUSH_MAX_DP)
+            prefs.edit().putFloat(KEY_BRUSH_SIZE, field).apply()
+        }
+
+    var eraserSizeDp: Float = prefs.getFloat(KEY_ERASER_SIZE, DEFAULT_ERASER_SIZE_DP).coerceIn(ERASER_MIN_DP, ERASER_MAX_DP)
+        set(value) {
+            field = value.coerceIn(ERASER_MIN_DP, ERASER_MAX_DP)
+            prefs.edit().putFloat(KEY_ERASER_SIZE, field).apply()
+        }
+
+    val pen: Brush
+        get() = Brush.createWithColorIntArgb(penFamily, penColor, penSizeDp * density, EPSILON)
+
+    val softBrush: Brush
+        get() = Brush.createWithColorIntArgb(softBrushFamily, brushColor, brushSizeDp * density, EPSILON)
+
+    val eraserRadiusPx: Float
+        get() = eraserSizeDp * density
+
+    fun brushFor(tool: DiaryTool): Brush = when (tool) {
+        DiaryTool.PEN -> pen
+        DiaryTool.BRUSH -> softBrush
+        DiaryTool.ERASER, DiaryTool.SELECT -> pen
+    }
+
+    fun colorFor(tool: DiaryTool): Int = when (tool) {
+        DiaryTool.PEN -> penColor
+        DiaryTool.BRUSH -> brushColor
+        DiaryTool.ERASER, DiaryTool.SELECT -> 0xff736c60.toInt()
+    }
+
+    fun setColorFor(tool: DiaryTool, color: Int) {
+        when (tool) {
+            DiaryTool.PEN -> penColor = color
+            DiaryTool.BRUSH -> brushColor = color
+            DiaryTool.ERASER, DiaryTool.SELECT -> Unit
+        }
+    }
+
+    fun sizeDpFor(tool: DiaryTool): Float = when (tool) {
+        DiaryTool.PEN -> penSizeDp
+        DiaryTool.BRUSH -> brushSizeDp
+        DiaryTool.ERASER, DiaryTool.SELECT -> eraserSizeDp
+    }
+
+    fun setSizeDpFor(tool: DiaryTool, sizeDp: Float) {
+        when (tool) {
+            DiaryTool.PEN -> penSizeDp = sizeDp
+            DiaryTool.BRUSH -> brushSizeDp = sizeDp
+            DiaryTool.ERASER -> eraserSizeDp = sizeDp
+            DiaryTool.SELECT -> Unit
+        }
+    }
+
+    fun sizeRangeFor(tool: DiaryTool): ClosedFloatingPointRange<Float> = when (tool) {
+        DiaryTool.PEN -> PEN_MIN_DP..PEN_MAX_DP
+        DiaryTool.BRUSH -> BRUSH_MIN_DP..BRUSH_MAX_DP
+        DiaryTool.ERASER, DiaryTool.SELECT -> ERASER_MIN_DP..ERASER_MAX_DP
+    }
+
+    fun sizePresetsFor(tool: DiaryTool): FloatArray = when (tool) {
+        DiaryTool.PEN -> PEN_PRESETS_DP
+        DiaryTool.BRUSH -> BRUSH_PRESETS_DP
+        DiaryTool.ERASER, DiaryTool.SELECT -> ERASER_PRESETS_DP
+    }
 
     private fun sizeResponse(source: SourceNode.Source, end: Float, minimum: Float): BrushBehavior =
         BrushBehavior(
@@ -38,4 +129,45 @@ internal class DiaryBrushes(density: Float) {
                 input = SourceNode(source, 0f, end, OutOfRange.CLAMP),
             ),
         )
+
+    companion object {
+        private const val PREFS_NAME = "diary_toolbox"
+        private const val KEY_PEN_COLOR = "pen_color"
+        private const val KEY_BRUSH_COLOR = "brush_color"
+        private const val KEY_PEN_SIZE = "pen_size_dp"
+        private const val KEY_BRUSH_SIZE = "brush_size_dp"
+        private const val KEY_ERASER_SIZE = "eraser_size_dp"
+
+        private const val ALPHA_MASK = 0xff000000.toInt()
+        private const val EPSILON = 0.2f
+
+        const val DEFAULT_PEN_COLOR = 0xff283948.toInt()
+        const val DEFAULT_BRUSH_COLOR = 0xff272320.toInt()
+
+        const val DEFAULT_PEN_SIZE_DP = 2.5f
+        const val DEFAULT_BRUSH_SIZE_DP = 12f
+        const val DEFAULT_ERASER_SIZE_DP = 14f
+
+        const val PEN_MIN_DP = 1f
+        const val PEN_MAX_DP = 10f
+        const val BRUSH_MIN_DP = 4f
+        const val BRUSH_MAX_DP = 28f
+        const val ERASER_MIN_DP = 6f
+        const val ERASER_MAX_DP = 32f
+
+        val PEN_PRESETS_DP = floatArrayOf(1.5f, 2.5f, 5f)
+        val BRUSH_PRESETS_DP = floatArrayOf(7f, 12f, 20f)
+        val ERASER_PRESETS_DP = floatArrayOf(8f, 14f, 24f)
+
+        val INK_SWATCHES = intArrayOf(
+            0xff272320.toInt(), // Sumi charcoal
+            0xff283948.toInt(), // Slate blue
+            0xff984631.toInt(), // Vermilion
+            0xff245850.toInt(), // Pine green
+            0xff36496e.toInt(), // Indigo
+            0xff986315.toInt(), // Ochre
+            0xff765499.toInt(), // Plum
+            0xff6e4b3a.toInt(), // Warm sepia
+        )
+    }
 }

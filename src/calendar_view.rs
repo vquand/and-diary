@@ -1,7 +1,8 @@
 use crate::{
     calendar::{MONTH_COUNT, month_at, month_days},
     pins::Pin,
-    stickers::symbol as pin_symbol,
+    settings::Palette,
+    stickers::{hanzi_badge, symbol as pin_symbol},
 };
 use chrono::{Datelike, NaiveDate};
 use gpui::{
@@ -15,12 +16,6 @@ use std::{
 };
 
 const WEEKDAYS: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-pub const TEXT: u32 = 0x302e29;
-const MUTED: u32 = 0x736c60;
-pub const ACCENT: u32 = 0x984631;
-pub const PAPER: u32 = 0xf8f3e8;
-pub const RULE: u32 = 0xe0d7c6;
-pub const WASH: u32 = 0xeee5d5;
 const MONTH_LABEL_HEIGHT: f32 = 105.;
 
 pub enum DateAction {
@@ -39,7 +34,9 @@ type DateHandler = dyn Fn(NaiveDate, DateAction, &mut Window, &mut App);
 pub fn months(
     today: NaiveDate,
     entries: Rc<BTreeSet<NaiveDate>>,
+    hanzi_days: Rc<BTreeSet<NaiveDate>>,
     pins: Rc<BTreeMap<NaiveDate, Pin>>,
+    palette: Palette,
     scroll: &UniformListScrollHandle,
     viewport_height: Pixels,
     activate_date: impl Fn(NaiveDate, DateAction, &mut Window, &mut App) + 'static,
@@ -70,7 +67,9 @@ pub fn months(
                     month_at(index),
                     today,
                     &entries,
+                    &hanzi_days,
                     &pins,
+                    palette,
                     weeks_height,
                     activate_date.clone(),
                 )
@@ -82,8 +81,8 @@ pub fn months(
     .flex_1()
     .min_h_0();
 
-    let opaque = linear_color_stop(rgb(PAPER), 0.);
-    let transparent = linear_color_stop(rgb(PAPER).opacity(0.), 1.);
+    let opaque = linear_color_stop(rgb(palette.paper), 0.);
+    let transparent = linear_color_stop(rgb(palette.paper).opacity(0.), 1.);
     let fade = |angle| {
         canvas(|_, _, _| (), |_, _, _, _| {})
             .absolute()
@@ -107,7 +106,9 @@ fn month_grid(
     month: NaiveDate,
     today: NaiveDate,
     entries: &BTreeSet<NaiveDate>,
+    hanzi_days: &BTreeSet<NaiveDate>,
     pins: &BTreeMap<NaiveDate, Pin>,
+    palette: Palette,
     weeks_height: Pixels,
     activate_date: Rc<DateHandler>,
 ) -> Div {
@@ -120,7 +121,7 @@ fn month_grid(
                 .flex_1()
                 .text_center()
                 .text_sm()
-                .text_color(rgb(MUTED))
+                .text_color(rgb(palette.muted))
                 .child(day)
         }));
     let days = month_days(month);
@@ -140,7 +141,9 @@ fn month_grid(
                     *day,
                     *day == today,
                     entries.contains(day),
+                    hanzi_days.contains(day),
                     pins.get(day).copied(),
+                    palette,
                     row_height,
                     activate_date.clone(),
                 ),
@@ -157,14 +160,14 @@ fn month_grid(
             .pt(px(16.))
             .pb(px(16.))
             .border_b_1()
-            .border_color(rgb(RULE))
+            .border_color(rgb(palette.rule))
             .child(
                 div()
                     .h(px(48.))
                     .flex()
                     .items_center()
                     .justify_between()
-                    .text_color(rgb(TEXT))
+                    .text_color(rgb(palette.text))
                     .child(
                         div()
                             .font_family("Noto Serif")
@@ -174,17 +177,28 @@ fn month_grid(
                     .child(
                         div()
                             .text_sm()
-                            .text_color(rgb(ACCENT))
+                            .text_color(rgb(palette.accent))
                             .border_1()
-                            .border_color(rgb(ACCENT).opacity(0.55))
+                            .border_color(rgb(palette.accent).opacity(0.55))
                             .px(px(6.))
                             .py(px(2.))
                             .child(month.format("%Y").to_string()),
                     ),
             )
             .child(weekdays)
-            .child(div().relative().children(weeks).child(ink_grid(week_count)))
-            .child(brush_rule(TEXT).absolute().top(px(59.)).left_0().w(px(52.))),
+            .child(
+                div()
+                    .relative()
+                    .children(weeks)
+                    .child(ink_grid(week_count, palette.text)),
+            )
+            .child(
+                brush_rule(palette.text)
+                    .absolute()
+                    .top(px(59.))
+                    .left_0()
+                    .w(px(52.)),
+            ),
     )
 }
 
@@ -192,7 +206,9 @@ fn date_cell(
     date: NaiveDate,
     is_today: bool,
     has_entry: bool,
+    hanzi_done: bool,
     pin: Option<Pin>,
+    palette: Palette,
     height: Pixels,
     activate_date: Rc<DateHandler>,
 ) -> AnyElement {
@@ -211,8 +227,8 @@ fn date_cell(
         .justify_center()
         .rounded_md()
         .cursor_pointer()
-        .active(|style| style.bg(rgb(WASH)))
-        .focus_visible(|style| style.bg(rgb(WASH)))
+        .active(move |style| style.bg(rgb(palette.wash)))
+        .focus_visible(move |style| style.bg(rgb(palette.wash)))
         .child(
             div()
                 .relative()
@@ -226,9 +242,9 @@ fn date_cell(
                 .font_family("Noto Serif")
                 .text_size(px(16.))
                 .when(is_today, |item| {
-                    item.text_color(rgb(ACCENT))
+                    item.text_color(rgb(palette.accent))
                         .font_weight(FontWeight::SEMIBOLD)
-                        .child(ink_ring())
+                        .child(ink_ring(palette.accent))
                 })
                 .child(date.day().to_string())
                 .when(has_entry, |item| {
@@ -238,12 +254,15 @@ fn date_cell(
                             .bottom(px(2.))
                             .size(px(5.))
                             .rounded_full()
-                            .bg(rgb(TEXT)),
+                            .bg(rgb(palette.text)),
                     )
                 }),
         )
         .when_some(pin, |cell, pin| {
             cell.child(pin_symbol(pin).absolute().top(px(4.)).right(px(4.)))
+        })
+        .when(hanzi_done, |cell| {
+            cell.child(hanzi_badge().absolute().bottom(px(6.)).right(px(4.)))
         })
         .child(
             canvas(
@@ -274,7 +293,7 @@ fn date_cell(
         .into_any_element()
 }
 
-fn ink_grid(weeks: usize) -> impl IntoElement {
+fn ink_grid(weeks: usize, color: u32) -> impl IntoElement {
     canvas(
         |_, _, _| (),
         move |bounds, _, window, _| {
@@ -314,7 +333,7 @@ fn ink_grid(weeks: usize) -> impl IntoElement {
                 stroke(at(0., y), at(1., y), row as f32 * 2.3 + 0.7);
             }
             if let Ok(path) = lines.build() {
-                window.paint_path(path, rgb(TEXT).opacity(0.57));
+                window.paint_path(path, rgb(color).opacity(0.45));
             }
         },
     )
@@ -342,10 +361,10 @@ pub fn brush_rule(color: u32) -> impl IntoElement + gpui::Styled {
     .w_full()
 }
 
-fn ink_ring() -> impl IntoElement {
+fn ink_ring(color: u32) -> impl IntoElement {
     canvas(
         |_, _, _| (),
-        |bounds, _, window, _| {
+        move |bounds, _, window, _| {
             let at = |x, y| bounds.origin + point(bounds.size.width * x, bounds.size.height * y);
             let mut ring = PathBuilder::stroke(px(1.7));
             ring.move_to(at(0.74, 0.11));
@@ -353,7 +372,7 @@ fn ink_ring() -> impl IntoElement {
             ring.cubic_bezier_to(at(0.86, 0.72), at(0.19, 1.05), at(0.77, 1.04));
             ring.cubic_bezier_to(at(0.61, 0.08), at(1.05, 0.37), at(0.9, 0.07));
             if let Ok(path) = ring.build() {
-                window.paint_path(path, rgb(ACCENT).opacity(0.85));
+                window.paint_path(path, rgb(color).opacity(0.85));
             }
         },
     )
@@ -365,6 +384,7 @@ pub fn pin_picker(
     date: NaiveDate,
     current: Option<Pin>,
     failed: bool,
+    palette: Palette,
     activate: impl Fn(&PinAction, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
     let activate = Rc::new(activate);
@@ -385,9 +405,9 @@ pub fn pin_picker(
             .gap(px(4.))
             .rounded_sm()
             .cursor_pointer()
-            .when(current == Some(pin), |row| row.bg(rgb(WASH)))
-            .focus_visible(|row| row.bg(rgb(WASH)))
-            .active(|row| row.bg(rgb(WASH)))
+            .when(current == Some(pin), |row| row.bg(rgb(palette.wash)))
+            .focus_visible(move |row| row.bg(rgb(palette.wash)))
+            .active(move |row| row.bg(rgb(palette.wash)))
             .child(pin_symbol(pin))
             .child(label)
             .on_click(move |_, window, app| activate(&PinAction::Set(Some(pin)), window, app))
@@ -402,7 +422,7 @@ pub fn pin_picker(
         .items_center()
         .justify_center()
         .p(px(16.))
-        .bg(rgba(0x262b2a55))
+        .bg(rgba(palette.scrim))
         .child(
             div()
                 .id("pin-picker")
@@ -413,8 +433,8 @@ pub fn pin_picker(
                 .p(px(16.))
                 .rounded_sm()
                 .border_1()
-                .border_color(rgb(RULE))
-                .bg(rgb(PAPER))
+                .border_color(rgb(palette.rule))
+                .bg(rgb(palette.paper))
                 .child(
                     div()
                         .px(px(9.))
@@ -428,7 +448,7 @@ pub fn pin_picker(
                     panel.child(
                         div()
                             .px(px(9.))
-                            .text_color(rgb(0x9b3a32))
+                            .text_color(rgb(palette.danger))
                             .child("Could not save the pin."),
                     )
                 })
@@ -439,20 +459,24 @@ pub fn pin_picker(
                         .pt(px(6.))
                         .gap(px(8.))
                         .when(current.is_some(), |actions| {
-                            actions.child(picker_button("remove-pin", "Remove pin").on_click(
-                                move |_, window, app| {
-                                    remove_pin(&PinAction::Set(None), window, app)
-                                },
-                            ))
+                            actions.child(
+                                picker_button("remove-pin", "Remove pin", palette).on_click(
+                                    move |_, window, app| {
+                                        remove_pin(&PinAction::Set(None), window, app)
+                                    },
+                                ),
+                            )
                         })
-                        .child(picker_button("close-pin-picker", "Cancel").on_click(
-                            move |_, window, app| activate(&PinAction::Close, window, app),
-                        )),
+                        .child(
+                            picker_button("close-pin-picker", "Cancel", palette).on_click(
+                                move |_, window, app| activate(&PinAction::Close, window, app),
+                            ),
+                        ),
                 ),
         )
 }
 
-fn picker_button(id: &'static str, label: &'static str) -> gpui::Stateful<Div> {
+fn picker_button(id: &'static str, label: &'static str, palette: Palette) -> gpui::Stateful<Div> {
     div()
         .id(id)
         .focusable()
@@ -461,9 +485,9 @@ fn picker_button(id: &'static str, label: &'static str) -> gpui::Stateful<Div> {
         .flex()
         .items_center()
         .rounded_md()
-        .text_color(rgb(ACCENT))
+        .text_color(rgb(palette.accent))
         .cursor_pointer()
-        .focus_visible(|style| style.bg(rgb(WASH)))
-        .active(|style| style.bg(rgb(WASH)))
+        .focus_visible(move |style| style.bg(rgb(palette.wash)))
+        .active(move |style| style.bg(rgb(palette.wash)))
         .child(label)
 }

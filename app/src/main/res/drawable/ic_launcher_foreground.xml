@@ -1,0 +1,30 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Everything sits comfortably inside the 66dp circular safe zone (21..87) -->
+    <!-- Flowing vermilion brush stroke beneath the nib -->
+    <path
+        android:fillColor="#984631"
+        android:pathData="M31,73c7,-4.5 16,-6.5 25,-5.5c7,0.8 14,2.8 21,0.5c1.5,-0.5 2.4,1.2 1.1,2.2c-6.8,5 -15.5,4.2 -23.5,3.2c-7.5,-0.9 -15.2,-0.5 -22.2,2.4c-1.8,0.7 -3,-1.8 -1.4,-2.8z" />
+    <!-- Fountain pen / calligraphy nib angled at 45° -->
+    <path
+        android:fillColor="#302E29"
+        android:pathData="M67.5,33.5c2.2,-2.2 5.8,-2.2 8,0c2.2,2.2 2.2,5.8 0,8L54.5,62.5L40,68l5.5,-14.5z" />
+    <!-- Crisp ivory nib slit and breather hole -->
+    <path
+        android:strokeColor="#F8F3E8"
+        android:strokeWidth="1.8"
+        android:strokeLineCap="round"
+        android:pathData="M43.5,64.5l10.5,-10.5" />
+    <path
+        android:fillColor="#F8F3E8"
+        android:pathData="M55.5,52.5m-2.3,0a2.3,2.3 0,1 1,4.6 0a2.3,2.3 0,1 1,-4.6 0" />
+    <!-- Subtle vermilion collar band on the pen barrel -->
+    <path
+        android:strokeColor="#984631"
+        android:strokeWidth="2.8"
+        android:strokeLineCap="round"
+        android:pathData="M62.5,38.5l7,7" />
+</vector>
