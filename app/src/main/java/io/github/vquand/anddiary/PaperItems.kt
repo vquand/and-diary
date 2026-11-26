@@ -56,6 +56,7 @@ internal data class PaperItem(
     val width: Float,
     val height: Float,
     val score: Int = 0,
+    val rotation: Float = 0f,
 )
 
 internal data class StickerPack(
@@ -115,7 +116,7 @@ internal data class StickerCatalog(
         stickers.firstOrNull { it.id == stickerId }
 
     fun fileFor(stickerId: String): String =
-        specFor(stickerId)?.file ?: "$stickerId.png"
+        specFor(stickerId)?.file ?: "$stickerId.webp"
 }
 
 internal class PaperItemsStore(private val context: Context, val date: LocalDate) {
@@ -149,6 +150,7 @@ internal class PaperItemsStore(private val context: Context, val date: LocalDate
                 width = obj.getDouble("width").toFloat(),
                 height = obj.getDouble("height").toFloat(),
                 score = obj.optInt("score", 0),
+                rotation = obj.optDouble("rotation", 0.0).toFloat(),
             )
         }
     }
@@ -173,7 +175,8 @@ internal class PaperItemsStore(private val context: Context, val date: LocalDate
                     .put("y", item.y.toDouble())
                     .put("width", item.width.toDouble())
                     .put("height", item.height.toDouble())
-                    .put("score", item.score),
+                    .put("score", item.score)
+                    .put("rotation", item.rotation.toDouble()),
             )
         }
         val stream = itemsFile.startWrite()
@@ -247,7 +250,7 @@ internal class PaperItemsStore(private val context: Context, val date: LocalDate
     ): PaperItem {
         val displayName = queryDisplayName(uri)
         val mime = context.contentResolver.getType(uri)
-        val extension = extensionFor(displayName, mime, kind)
+        val extension = if (kind == PaperItemKind.PHOTO) "webp" else extensionFor(displayName, mime, kind)
         val id = UUID.randomUUID().toString()
         val filename = "$id.$extension"
         synchronized(pendingImports) { pendingImports.add(filename) }
@@ -255,9 +258,13 @@ internal class PaperItemsStore(private val context: Context, val date: LocalDate
             mediaDir.mkdirs()
             val destination = File(mediaDir, filename)
 
-            context.contentResolver.openInputStream(uri)?.use { input ->
-                destination.outputStream().use { output -> input.copyTo(output) }
-            } ?: throw IOException("Could not open selected media")
+            if (kind == PaperItemKind.PHOTO) {
+                importPhotoAsWebp(uri, destination)
+            } else {
+                context.contentResolver.openInputStream(uri)?.use { input ->
+                    destination.outputStream().use { output -> input.copyTo(output) }
+                } ?: throw IOException("Could not open selected media")
+            }
 
         val label = displayName?.substringBeforeLast('.')?.takeIf { it.isNotBlank() } ?: when (kind) {
             PaperItemKind.PHOTO -> "Photo"
@@ -452,16 +459,44 @@ internal class PaperItemsStore(private val context: Context, val date: LocalDate
             if (index >= 0 && cursor.moveToFirst()) cursor.getString(index) else null
         }
 
+    private fun importPhotoAsWebp(uri: Uri, destination: File) {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        context.contentResolver.openInputStream(uri)?.use { input ->
+            BitmapFactory.decodeStream(input, null, bounds)
+        } ?: throw IOException("Could not open selected image")
+        val largest = max(bounds.outWidth, bounds.outHeight)
+        var sample = 1
+        while (largest / sample > 2048) sample *= 2
+        val bitmap = context.contentResolver.openInputStream(uri)?.use { input ->
+            BitmapFactory.decodeStream(input, null, BitmapFactory.Options().apply { inSampleSize = sample })
+        } ?: throw IOException("Could not decode selected image")
+        try {
+            val format = if (Build.VERSION.SDK_INT >= 30) {
+                Bitmap.CompressFormat.WEBP_LOSSY
+            } else {
+                @Suppress("DEPRECATION")
+                Bitmap.CompressFormat.WEBP
+            }
+            destination.outputStream().use { output ->
+                if (!bitmap.compress(format, 88, output)) {
+                    throw IOException("Could not encode image as WebP")
+                }
+            }
+        } finally {
+            bitmap.recycle()
+        }
+    }
+
     private fun extensionFor(displayName: String?, mime: String?, kind: PaperItemKind): String {
         val fromMime = mime?.let { MimeTypeMap.getSingleton().getExtensionFromMimeType(it) }
         if (!fromMime.isNullOrBlank()) return fromMime
         val fromName = displayName?.substringAfterLast('.', "")?.lowercase(Locale.US)
         if (!fromName.isNullOrBlank() && fromName.length <= 5) return fromName
         return when (kind) {
-            PaperItemKind.PHOTO -> "jpg"
+            PaperItemKind.PHOTO -> "webp"
             PaperItemKind.VIDEO -> "mp4"
             PaperItemKind.AUDIO -> "m4a"
-            PaperItemKind.STICKER, PaperItemKind.HANZI -> "png"
+            PaperItemKind.STICKER, PaperItemKind.HANZI -> "webp"
         }
     }
 

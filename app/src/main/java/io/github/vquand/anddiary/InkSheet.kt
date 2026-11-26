@@ -7,6 +7,7 @@ import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Matrix
 import android.graphics.Paint
+import android.graphics.RectF
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Build
@@ -26,18 +27,22 @@ import android.widget.Toast
 import androidx.ink.authoring.InProgressStrokeId
 import androidx.ink.authoring.InProgressStrokesFinishedListener
 import androidx.ink.authoring.InProgressStrokesView
+import androidx.ink.brush.Brush
 import androidx.ink.geometry.AffineTransform
 import androidx.ink.geometry.ImmutableParallelogram
 import androidx.ink.geometry.ImmutableSegment
 import androidx.ink.geometry.ImmutableVec
 import androidx.ink.geometry.Intersection.intersects
 import androidx.ink.rendering.android.canvas.CanvasStrokeRenderer
+import androidx.ink.strokes.MutableStrokeInputBatch
 import androidx.ink.strokes.Stroke
+import androidx.ink.strokes.StrokeInput
 import java.time.LocalDate
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
 import kotlin.math.abs
+import kotlin.math.atan2
 import kotlin.math.hypot
 import kotlin.math.roundToInt
 
@@ -57,6 +62,7 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
     private var clearDialog: AlertDialog? = null
     private var stickerDialog: Dialog? = null
     private var hanziDialog: Dialog? = null
+    private var exportDialog: Dialog? = null
 
     private val penButton = ToolChip(context, R.string.pen, DiaryTool.PEN, ToolIconKind.PEN)
     private val brushButton = ToolChip(context, R.string.brush, DiaryTool.BRUSH, ToolIconKind.BRUSH)
@@ -96,6 +102,24 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
     }.apply {
         visibility = GONE
     }
+    private val saveSelectionItem = TextView(context).apply {
+        setText(R.string.save_selection)
+        setTextColor(palette.text)
+        setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+        gravity = Gravity.CENTER_VERTICAL
+        minHeight = dp(44)
+        setPadding(dp(14), 0, dp(14), 0)
+        isClickable = true
+        visibility = GONE
+        setOnClickListener {
+            hidePopovers()
+            openExportSelectionDialog()
+        }
+    }
+    private val moreMenuDivider = View(context).apply {
+        setBackgroundColor(palette.rule)
+        visibility = GONE
+    }
     private val deleteDiaryItem = TextView(context).apply {
         setText(R.string.delete_diary)
         setTextColor(palette.danger)
@@ -120,6 +144,10 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
             setStroke(dp(1), palette.rule)
             cornerRadius = 10f * density
         }
+        addView(saveSelectionItem, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT))
+        addView(moreMenuDivider, LayoutParams(LayoutParams.MATCH_PARENT, dp(1)).apply {
+            setMargins(dp(10), dp(2), dp(10), dp(2))
+        })
         addView(deleteDiaryItem, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT))
     }
     private lateinit var toolbarScroll: HorizontalScrollView
@@ -225,6 +253,8 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
         toolbarMode = DiarySettings.toolbarMode(context)
         toolbarScroll.setBackgroundColor(palette.wash)
         toolbarRule.setBackgroundColor(palette.rule)
+        saveSelectionItem.setTextColor(palette.text)
+        moreMenuDivider.setBackgroundColor(palette.rule)
         deleteDiaryItem.setTextColor(palette.danger)
         moreMenu.background = GradientDrawable().apply {
             setColor(palette.paper)
@@ -246,6 +276,7 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
         mediaPlayback.release()
         stickerDialog?.dismiss()
         hanziDialog?.dismiss()
+        exportDialog?.dismiss()
         clearDialog?.dismiss()
         paper.cancelGesture()
 
@@ -320,6 +351,8 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
         stickerDialog = null
         hanziDialog?.dismiss()
         hanziDialog = null
+        exportDialog?.dismiss()
+        exportDialog = null
         clearDialog?.dismiss()
         super.onDetachedFromWindow()
     }
@@ -345,6 +378,48 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
             },
         )
         updateToolbar()
+    }
+
+    private fun openExportSelectionDialog() {
+        hidePopovers()
+        paper.cancelGesture()
+        if (exportDialog?.isShowing == true) return
+        val snapshot = paper.selectionExportSnapshot() ?: return
+        exportDialog = SelectionExporter.showDialog(
+            context = context,
+            date = currentDate,
+            palette = palette,
+            onConfirm = { request -> exportSelectionAsync(snapshot, request) },
+            onDismiss = { exportDialog = null },
+        )
+    }
+
+    private fun exportSelectionAsync(snapshot: SelectionExportSnapshot, request: ExportRequest) {
+        val targetStore = itemsStore
+        ioExecutor.execute {
+            try {
+                val savedName = SelectionExporter.exportToGallery(
+                    context = context,
+                    snapshot = snapshot,
+                    request = request,
+                    itemsStore = targetStore,
+                    density = density,
+                    paperPalette = DiaryPalette.LIGHT,
+                )
+                post {
+                    Toast.makeText(
+                        context,
+                        context.getString(R.string.export_saved, savedName),
+                        Toast.LENGTH_SHORT,
+                    ).show()
+                }
+            } catch (error: Exception) {
+                Log.e("DiaryExport", "Could not export selection", error)
+                post {
+                    Toast.makeText(context, R.string.export_failed, Toast.LENGTH_LONG).show()
+                }
+            }
+        }
     }
 
     private fun openStickerDialog() {
@@ -457,6 +532,10 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                 paper.clearSelection()
             }
             popover.bind(paper.activeTool)
+        } else if (target === moreMenu) {
+            val showExport = paper.hasSelection
+            saveSelectionItem.visibility = if (showExport) VISIBLE else GONE
+            moreMenuDivider.visibility = if (showExport) VISIBLE else GONE
         }
         popoverScrim.visibility = VISIBLE
         target.visibility = VISIBLE
@@ -532,6 +611,47 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
         var moved: Boolean = false,
     )
     private data class MediaTap(val pointerId: Int, val item: PaperItem, val downX: Float, val downY: Float)
+    private data class Lassoing(val pointerId: Int, val points: MutableList<Pair<Float, Float>>)
+    private data class AreaDrag(
+        val pointerId: Int,
+        val mode: DragMode,
+        val downX: Float,
+        val downY: Float,
+        val startBounds: RectF,
+        val preStrokes: List<Stroke>,
+        val preItems: List<PaperItem>,
+        var moved: Boolean = false,
+    )
+    private data class TwoFingerTransform(
+        val pointer1Id: Int,
+        val pointer2Id: Int,
+        val startMidX: Float,
+        val startMidY: Float,
+        val startAngleRad: Double,
+        val startDist: Float,
+        val pivotX: Float,
+        val pivotY: Float,
+        val allowScale: Boolean,
+        val preStrokes: List<Stroke>,
+        val preItems: List<PaperItem>,
+        var moved: Boolean = false,
+    )
+    private data class SelectionTransform(
+        val pivotX: Float,
+        val pivotY: Float,
+        val translateX: Float,
+        val translateY: Float,
+        val scale: Float,
+        val rotationDeg: Float,
+    ) {
+        fun fillMatrix(out: Matrix) {
+            out.reset()
+            out.postTranslate(-pivotX, -pivotY)
+            out.postScale(scale, scale)
+            out.postRotate(rotationDeg)
+            out.postTranslate(pivotX + translateX, pivotY + translateY)
+        }
+    }
 
     private inner class Paper : FrameLayout(context) {
         var fingerInk = false
@@ -539,14 +659,19 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
         private val ink = InProgressStrokesView(context)
         private val renderer = CanvasStrokeRenderer.create()
         private val identity = Matrix()
+        private val liveMatrix = Matrix()
         private val viewToPaper = Matrix()
         private var strokes = emptyList<Stroke>()
         private var items = emptyList<PaperItem>()
-        private var selectedItemId: String? = null
+        private var selectedItemIds: Set<String> = emptySet()
+        private var selectedStrokeIndices: Set<Int> = emptySet()
+        private var selectionBounds: RectF? = null
+        private var liveTransform: SelectionTransform? = null
         private val undoStack = ArrayDeque<HistorySnapshot>()
         private val redoStack = ArrayDeque<HistorySnapshot>()
         private val finishing = mutableMapOf<InProgressStrokeId, InkEntry>()
         val hasContent: Boolean get() = strokes.isNotEmpty() || finishing.values.any { it === entry } || items.isNotEmpty()
+        val hasSelection: Boolean get() = selectedItemIds.isNotEmpty() || selectedStrokeIndices.isNotEmpty()
         val canUndo: Boolean get() = undoStack.isNotEmpty()
         val canRedo: Boolean get() = redoStack.isNotEmpty()
         private var readable = false
@@ -569,6 +694,9 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
         private var erasing: Erasing? = null
         private var scrolling: Scrolling? = null
         private var itemDrag: ItemDrag? = null
+        private var areaDrag: AreaDrag? = null
+        private var lassoing: Lassoing? = null
+        private var twoFinger: TwoFingerTransform? = null
         private var mediaTap: MediaTap? = null
         private var offset = 0f
         private var sheetHeight = 0f
@@ -621,7 +749,10 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
         fun reloadForCurrentDate() {
             cancelGesture()
             loadingBitmaps.clear()
-            selectedItemId = null
+            selectedItemIds = emptySet()
+            selectedStrokeIndices = emptySet()
+            selectionBounds = null
+            liveTransform = null
             undoStack.clear()
             redoStack.clear()
             offset = 0f
@@ -669,9 +800,72 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
         fun maxNewItemWidth(): Float = (width * 0.58f).coerceAtLeast(160f * density)
 
         fun clearSelection() {
-            if (selectedItemId != null) {
-                selectedItemId = null
+            if (hasSelection || liveTransform != null) {
+                selectedItemIds = emptySet()
+                selectedStrokeIndices = emptySet()
+                selectionBounds = null
+                liveTransform = null
                 invalidate()
+            }
+        }
+
+        fun selectionExportSnapshot(): SelectionExportSnapshot? {
+            if (!hasSelection) return null
+            recomputeSelectionBounds()
+            val bounds = selectionBounds ?: return null
+            val selectedItems = items.filter { it.id in selectedItemIds }
+            val selectedStrokes = strokes.filterIndexed { idx, _ -> idx in selectedStrokeIndices }
+            if (selectedItems.isEmpty() && selectedStrokes.isEmpty()) return null
+            return SelectionExportSnapshot(
+                date = currentDate,
+                bounds = RectF(bounds),
+                strokes = selectedStrokes,
+                items = selectedItems,
+            )
+        }
+
+        private fun singleSelectedItem(): PaperItem? =
+            if (selectedStrokeIndices.isEmpty() && selectedItemIds.size == 1) {
+                items.firstOrNull { it.id == selectedItemIds.first() }
+            } else {
+                null
+            }
+
+        private fun selectionAllowsResize(): Boolean =
+            selectedStrokeIndices.isNotEmpty() ||
+                items.any { it.id in selectedItemIds && it.kind != PaperItemKind.AUDIO }
+
+        private fun recomputeSelectionBounds() {
+            if (!hasSelection) {
+                selectionBounds = null
+                return
+            }
+            var minX = Float.POSITIVE_INFINITY
+            var minY = Float.POSITIVE_INFINITY
+            var maxX = Float.NEGATIVE_INFINITY
+            var maxY = Float.NEGATIVE_INFINITY
+            for (item in items) {
+                if (item.id !in selectedItemIds) continue
+                val b = LassoGeometry.rotatedRectBounds(item.x, item.y, item.width, item.height, item.rotation)
+                if (b[0] < minX) minX = b[0]
+                if (b[1] < minY) minY = b[1]
+                if (b[2] > maxX) maxX = b[2]
+                if (b[3] > maxY) maxY = b[3]
+            }
+            for (idx in selectedStrokeIndices) {
+                val stroke = strokes.getOrNull(idx) ?: continue
+                val box = stroke.shape.computeBoundingBox() ?: continue
+                if (box.xMin < minX) minX = box.xMin
+                if (box.yMin < minY) minY = box.yMin
+                if (box.xMax > maxX) maxX = box.xMax
+                if (box.yMax > maxY) maxY = box.yMax
+            }
+            selectionBounds = if (minX.isFinite() && minY.isFinite() && maxX.isFinite() && maxY.isFinite()) {
+                RectF(minX, minY, maxX, maxY)
+            } else {
+                selectedItemIds = emptySet()
+                selectedStrokeIndices = emptySet()
+                null
             }
         }
 
@@ -702,7 +896,9 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
         fun addImportedItem(item: PaperItem) {
             val previous = HistorySnapshot(strokes, items)
             if (commitChange(previous, strokes, items + item)) {
-                selectedItemId = item.id
+                selectedItemIds = setOf(item.id)
+                selectedStrokeIndices = emptySet()
+                recomputeSelectionBounds()
                 activeTool = DiaryTool.SELECT
                 updateToolbar()
                 invalidate()
@@ -726,11 +922,45 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
 
             val restore = canvas.save()
             canvas.translate(0f, -offset)
-            for (item in items) {
-                itemRenderer.drawItem(canvas, item, itemsStore, mediaPlayback.playingAudioId, ::requestItemBitmap)
+            val transform = liveTransform
+            if (transform != null && hasSelection) {
+                for (item in items) {
+                    if (item.id !in selectedItemIds) {
+                        itemRenderer.drawItem(canvas, item, itemsStore, mediaPlayback.playingAudioId, ::requestItemBitmap)
+                    }
+                }
+                for (i in strokes.indices) {
+                    if (i !in selectedStrokeIndices) {
+                        renderer.draw(canvas, strokes[i], identity)
+                    }
+                }
+                transform.fillMatrix(liveMatrix)
+                val selRestore = canvas.save()
+                canvas.concat(liveMatrix)
+                for (item in items) {
+                    if (item.id in selectedItemIds) {
+                        itemRenderer.drawItem(canvas, item, itemsStore, mediaPlayback.playingAudioId, ::requestItemBitmap)
+                    }
+                }
+                for (i in strokes.indices) {
+                    if (i in selectedStrokeIndices) {
+                        renderer.draw(canvas, strokes[i], identity)
+                    }
+                }
+                singleSelectedItem()?.let { itemRenderer.drawSelectionHandles(canvas, it) }
+                    ?: selectionBounds?.let { itemRenderer.drawAreaSelectionHandles(canvas, it, selectionAllowsResize()) }
+                canvas.restoreToCount(selRestore)
+            } else {
+                for (item in items) {
+                    itemRenderer.drawItem(canvas, item, itemsStore, mediaPlayback.playingAudioId, ::requestItemBitmap)
+                }
+                for (stroke in strokes) renderer.draw(canvas, stroke, identity)
+                singleSelectedItem()?.let { itemRenderer.drawSelectionHandles(canvas, it) }
+                    ?: selectionBounds?.let { itemRenderer.drawAreaSelectionHandles(canvas, it, selectionAllowsResize()) }
             }
-            for (stroke in strokes) renderer.draw(canvas, stroke, identity)
-            items.firstOrNull { it.id == selectedItemId }?.let { itemRenderer.drawSelectionHandles(canvas, it) }
+            lassoing?.let { active ->
+                itemRenderer.drawLassoPath(canvas, active.points)
+            }
             canvas.restoreToCount(restore)
 
             erasing?.let { active ->
@@ -765,9 +995,18 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                     val paperY = event.getY(index) + offset
                     if (first) cancelGesture()
 
+                    // Two-finger rotate & scale on any active selection (single sticker/item or lasso area).
+                    if (!first && hasSelection && event.pointerCount == 2 && !stylusEraser && drawing == null && erasing == null) {
+                        startTwoFingerTransform(event)
+                        return true
+                    }
+
                     if (activeTool == DiaryTool.SELECT && first && !stylusEraser) {
                         if (handleSelectDown(pointer, paperX, paperY)) return true
-                        if (tool == MotionEvent.TOOL_TYPE_FINGER) {
+                        if (stylus || fingerInk) {
+                            lassoing = Lassoing(pointer, mutableListOf(paperX to paperY))
+                            invalidate()
+                        } else if (tool == MotionEvent.TOOL_TYPE_FINGER) {
                             scrolling = Scrolling(pointer, event.getY(index), offset)
                         }
                         return true
@@ -798,6 +1037,87 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                 }
 
                 MotionEvent.ACTION_MOVE -> {
+                    twoFinger?.let { tf ->
+                        val i1 = event.findPointerIndex(tf.pointer1Id)
+                        val i2 = event.findPointerIndex(tf.pointer2Id)
+                        if (i1 != -1 && i2 != -1) {
+                            val x1 = event.getX(i1)
+                            val y1 = event.getY(i1) + offset
+                            val x2 = event.getX(i2)
+                            val y2 = event.getY(i2) + offset
+                            val midX = (x1 + x2) / 2f
+                            val midY = (y1 + y2) / 2f
+                            val angle = atan2((y2 - y1).toDouble(), (x2 - x1).toDouble())
+                            val dist = hypot((x2 - x1).toDouble(), (y2 - y1).toDouble()).toFloat()
+                            val deltaDeg = Math.toDegrees(angle - tf.startAngleRad).toFloat()
+                            val scale = if (tf.allowScale && tf.startDist > 20f * density) {
+                                (dist / tf.startDist).coerceIn(0.25f, 4f)
+                            } else {
+                                1f
+                            }
+                            liveTransform = SelectionTransform(
+                                pivotX = tf.pivotX,
+                                pivotY = tf.pivotY,
+                                translateX = midX - tf.startMidX,
+                                translateY = midY - tf.startMidY,
+                                scale = scale,
+                                rotationDeg = deltaDeg,
+                            )
+                            tf.moved = true
+                            invalidate()
+                        }
+                        return true
+                    }
+                    lassoing?.let { active ->
+                        val pointerIndex = event.findPointerIndex(active.pointerId)
+                        if (pointerIndex != -1) {
+                            val cx = event.getX(pointerIndex)
+                            val cy = event.getY(pointerIndex) + offset
+                            val last = active.points.last()
+                            if (hypot((cx - last.first).toDouble(), (cy - last.second).toDouble()) >= 4f * density) {
+                                active.points.add(cx to cy)
+                                invalidate()
+                            }
+                        }
+                    }
+                    areaDrag?.let { drag ->
+                        val pointerIndex = event.findPointerIndex(drag.pointerId)
+                        if (pointerIndex != -1) {
+                            val cx = event.getX(pointerIndex)
+                            val cy = event.getY(pointerIndex) + offset
+                            val dx = cx - drag.downX
+                            val dy = cy - drag.downY
+                            if (!drag.moved && hypot(dx.toDouble(), dy.toDouble()) > 4f * density) {
+                                drag.moved = true
+                            }
+                            if (drag.moved) {
+                                liveTransform = when (drag.mode) {
+                                    DragMode.MOVE -> SelectionTransform(
+                                        pivotX = drag.startBounds.centerX(),
+                                        pivotY = drag.startBounds.centerY(),
+                                        translateX = dx,
+                                        translateY = dy,
+                                        scale = 1f,
+                                        rotationDeg = 0f,
+                                    )
+
+                                    DragMode.RESIZE -> {
+                                        val baseW = drag.startBounds.width().coerceAtLeast(24f * density)
+                                        val scale = ((baseW + dx) / baseW).coerceIn(0.25f, 4f)
+                                        SelectionTransform(
+                                            pivotX = drag.startBounds.left,
+                                            pivotY = drag.startBounds.top,
+                                            translateX = 0f,
+                                            translateY = 0f,
+                                            scale = scale,
+                                            rotationDeg = 0f,
+                                        )
+                                    }
+                                }
+                                invalidate()
+                            }
+                        }
+                    }
                     itemDrag?.let { drag ->
                         val pointerIndex = event.findPointerIndex(drag.pointerId)
                         if (pointerIndex != -1) {
@@ -863,15 +1183,45 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                     val pointer = event.getPointerId(index)
                     val canceled = Build.VERSION.SDK_INT >= 33 && event.flags and MotionEvent.FLAG_CANCELED != 0
 
+                    twoFinger?.takeIf { pointer == it.pointer1Id || pointer == it.pointer2Id }?.let { tf ->
+                        twoFinger = null
+                        val activeTransform = liveTransform
+                        liveTransform = null
+                        if (!canceled && tf.moved && activeTransform != null) {
+                            commitSelectionTransform(activeTransform, tf.preStrokes, tf.preItems)
+                        }
+                        invalidate()
+                    }
+
+                    lassoing?.takeIf { it.pointerId == pointer }?.let { active ->
+                        lassoing = null
+                        if (!canceled) {
+                            finishLassoSelection(active.points)
+                        }
+                        invalidate()
+                    }
+
+                    areaDrag?.takeIf { it.pointerId == pointer }?.let { drag ->
+                        areaDrag = null
+                        val activeTransform = liveTransform
+                        liveTransform = null
+                        if (!canceled && drag.moved && activeTransform != null) {
+                            commitSelectionTransform(activeTransform, drag.preStrokes, drag.preItems)
+                        }
+                        invalidate()
+                    }
+
                     itemDrag?.takeIf { it.pointerId == pointer }?.let { drag ->
                         itemDrag = null
                         if (canceled) {
                             items = drag.preItems
+                            recomputeSelectionBounds()
                         } else if (drag.moved) {
                             val previous = HistorySnapshot(strokes, drag.preItems)
                             if (!commitChange(previous, strokes, items)) {
                                 items = drag.preItems
                             }
+                            recomputeSelectionBounds()
                         } else if (drag.mode == DragMode.MOVE) {
                             when (drag.startItem.kind) {
                                 PaperItemKind.VIDEO -> playVideo(drag.startItem)
@@ -938,43 +1288,275 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                             MotionEvent.BUTTON_SECONDARY
                         )) != 0)
 
+        private fun startTwoFingerTransform(event: MotionEvent) {
+            itemDrag?.let {
+                items = it.preItems
+                recomputeSelectionBounds()
+            }
+            itemDrag = null
+            areaDrag = null
+            lassoing = null
+            scrolling = null
+            mediaTap = null
+            liveTransform = null
+
+            val x1 = event.getX(0)
+            val y1 = event.getY(0) + offset
+            val x2 = event.getX(1)
+            val y2 = event.getY(1) + offset
+            val midX = (x1 + x2) / 2f
+            val midY = (y1 + y2) / 2f
+            val bounds = selectionBounds
+            twoFinger = TwoFingerTransform(
+                pointer1Id = event.getPointerId(0),
+                pointer2Id = event.getPointerId(1),
+                startMidX = midX,
+                startMidY = midY,
+                startAngleRad = atan2((y2 - y1).toDouble(), (x2 - x1).toDouble()),
+                startDist = hypot((x2 - x1).toDouble(), (y2 - y1).toDouble()).toFloat(),
+                pivotX = bounds?.centerX() ?: midX,
+                pivotY = bounds?.centerY() ?: midY,
+                allowScale = selectionAllowsResize(),
+                preStrokes = strokes,
+                preItems = items,
+            )
+        }
+
+        private fun finishLassoSelection(points: List<Pair<Float, Float>>) {
+            if (points.size < 3) {
+                clearSelection()
+                return
+            }
+            var minX = Float.POSITIVE_INFINITY
+            var minY = Float.POSITIVE_INFINITY
+            var maxX = Float.NEGATIVE_INFINITY
+            var maxY = Float.NEGATIVE_INFINITY
+            for ((px, py) in points) {
+                if (px < minX) minX = px
+                if (py < minY) minY = py
+                if (px > maxX) maxX = px
+                if (py > maxY) maxY = py
+            }
+            if (maxX - minX < 12f * density && maxY - minY < 12f * density) {
+                clearSelection()
+                return
+            }
+
+            val hitStrokes = mutableSetOf<Int>()
+            val scratch = StrokeInput()
+            for (i in strokes.indices) {
+                val stroke = strokes[i]
+                val box = stroke.shape.computeBoundingBox()
+                if (box != null && (box.xMax < minX || box.xMin > maxX || box.yMax < minY || box.yMin > maxY)) {
+                    continue
+                }
+                val inputs = stroke.inputs
+                var matched = false
+                for (p in 0 until inputs.size) {
+                    inputs.populate(p, scratch)
+                    if (LassoGeometry.pointInPolygon(scratch.x, scratch.y, points)) {
+                        matched = true
+                        break
+                    }
+                }
+                if (matched) hitStrokes.add(i)
+            }
+
+            val hitItems = mutableSetOf<String>()
+            for (item in items) {
+                if (LassoGeometry.itemIntersectsLasso(item.x, item.y, item.width, item.height, item.rotation, points)) {
+                    hitItems.add(item.id)
+                }
+            }
+
+            selectedStrokeIndices = hitStrokes
+            selectedItemIds = hitItems
+            recomputeSelectionBounds()
+        }
+
+        private fun commitSelectionTransform(
+            transform: SelectionTransform,
+            preStrokes: List<Stroke>,
+            preItems: List<PaperItem>,
+        ) {
+            val matrix = Matrix()
+            transform.fillMatrix(matrix)
+            val pt = FloatArray(2)
+
+            val nextItems = preItems.map { item ->
+                if (item.id !in selectedItemIds) return@map item
+                val cx = item.x + item.width / 2f
+                val cy = item.y + item.height / 2f
+                pt[0] = cx
+                pt[1] = cy
+                matrix.mapPoints(pt)
+                val itemScale = if (item.kind == PaperItemKind.AUDIO) 1f else transform.scale
+                val minW = 44f * density
+                val newW = (item.width * itemScale).coerceAtLeast(minW)
+                val ratio = if (item.width > 0f) newW / item.width else 1f
+                val newH = (item.height * ratio).coerceAtLeast(24f * density)
+                item.copy(
+                    x = pt[0] - newW / 2f,
+                    y = pt[1] - newH / 2f,
+                    width = newW,
+                    height = newH,
+                    rotation = LassoGeometry.normalizeAngle(item.rotation + transform.rotationDeg),
+                )
+            }
+
+            val nextStrokes = preStrokes.mapIndexed { idx, stroke ->
+                if (idx !in selectedStrokeIndices) stroke else transformStroke(stroke, matrix, transform.scale, transform.rotationDeg)
+            }
+
+            val previous = HistorySnapshot(preStrokes, preItems)
+            if (commitChange(previous, nextStrokes, nextItems)) {
+                recomputeSelectionBounds()
+            }
+        }
+
+        private fun transformStroke(
+            stroke: Stroke,
+            matrix: Matrix,
+            scale: Float,
+            rotationDeg: Float,
+        ): Stroke {
+            val inputs = stroke.inputs
+            val batch = MutableStrokeInputBatch()
+            batch.setNoiseSeed(inputs.getNoiseSeed())
+            val scratch = StrokeInput()
+            val pt = FloatArray(2)
+            val rotRad = Math.toRadians(rotationDeg.toDouble()).toFloat()
+            val twoPi = (2.0 * Math.PI).toFloat()
+            for (i in 0 until inputs.size) {
+                inputs.populate(i, scratch)
+                pt[0] = scratch.x
+                pt[1] = scratch.y
+                matrix.mapPoints(pt)
+                val orientation = if (scratch.hasOrientation) {
+                    var o = (scratch.orientationRadians + rotRad) % twoPi
+                    if (o < 0f) o += twoPi
+                    o
+                } else {
+                    StrokeInput.NO_ORIENTATION
+                }
+                val unitLen = if (inputs.hasStrokeUnitLength()) {
+                    scratch.strokeUnitLengthCm * scale
+                } else {
+                    StrokeInput.NO_STROKE_UNIT_LENGTH
+                }
+                scratch.update(
+                    pt[0],
+                    pt[1],
+                    scratch.elapsedTimeMillis,
+                    scratch.toolType,
+                    unitLen,
+                    scratch.pressure,
+                    scratch.tiltRadians,
+                    orientation,
+                )
+                batch.add(scratch)
+            }
+            val oldBrush = stroke.brush
+            val newSize = (oldBrush.size * scale).coerceIn(1f, 200f * density)
+            val newBrush = Brush.createWithColorIntArgb(
+                oldBrush.family,
+                oldBrush.colorIntArgb,
+                newSize,
+                oldBrush.epsilon,
+            )
+            return Stroke(newBrush, batch.toImmutable())
+        }
+
         private fun handleSelectDown(pointer: Int, paperX: Float, paperY: Float): Boolean {
             val handleHitR = 22f * density
-            val pad = 4f * density
-            val selected = items.firstOrNull { it.id == selectedItemId }
-            if (selected != null) {
-                val right = selected.x + selected.width + pad
-                val top = selected.y - pad
-                val bottom = selected.y + selected.height + pad
+            val single = singleSelectedItem()
+            if (single != null) {
+                val pad = 4f * density
+                val cx = single.x + single.width / 2f
+                val cy = single.y + single.height / 2f
+                val (localX, localY) = LassoGeometry.rotatePoint(paperX, paperY, cx, cy, -single.rotation)
+                val right = single.x + single.width + pad
+                val top = single.y - pad
+                val bottom = single.y + single.height + pad
 
                 // Delete handle
-                if (hypot((paperX - right).toDouble(), (paperY - top).toDouble()) <= handleHitR) {
-                    if (mediaPlayback.playingAudioId == selected.id) stopAudio()
+                if (hypot((localX - right).toDouble(), (localY - top).toDouble()) <= handleHitR) {
+                    if (mediaPlayback.playingAudioId == single.id) stopAudio()
                     val previous = HistorySnapshot(strokes, items)
-                    val remaining = items.filterNot { it.id == selected.id }
+                    val remaining = items.filterNot { it.id == single.id }
                     if (commitChange(previous, strokes, remaining)) {
-                        selectedItemId = null
+                        clearSelection()
                     }
                     invalidate()
                     return true
                 }
 
                 // Resize handle
-                if (selected.kind != PaperItemKind.AUDIO &&
-                    hypot((paperX - right).toDouble(), (paperY - bottom).toDouble()) <= handleHitR
+                if (single.kind != PaperItemKind.AUDIO &&
+                    hypot((localX - right).toDouble(), (localY - bottom).toDouble()) <= handleHitR
                 ) {
-                    itemDrag = ItemDrag(pointer, selected.id, DragMode.RESIZE, paperX, paperY, selected, items)
+                    itemDrag = ItemDrag(pointer, single.id, DragMode.RESIZE, paperX, paperY, single, items)
                     return true
+                }
+
+                // Move inside selected item
+                if (localX >= single.x && localX <= single.x + single.width &&
+                    localY >= single.y && localY <= single.y + single.height
+                ) {
+                    itemDrag = ItemDrag(pointer, single.id, DragMode.MOVE, paperX, paperY, single, items)
+                    return true
+                }
+            } else if (hasSelection) {
+                val bounds = selectionBounds
+                if (bounds != null) {
+                    val pad = 6f * density
+                    val right = bounds.right + pad
+                    val top = bounds.top - pad
+                    val bottom = bounds.bottom + pad
+
+                    // Delete entire selected area
+                    if (hypot((paperX - right).toDouble(), (paperY - top).toDouble()) <= handleHitR) {
+                        if (mediaPlayback.playingAudioId in selectedItemIds) stopAudio()
+                        val previous = HistorySnapshot(strokes, items)
+                        val remainingStrokes = strokes.filterIndexed { idx, _ -> idx !in selectedStrokeIndices }
+                        val remainingItems = items.filterNot { it.id in selectedItemIds }
+                        if (commitChange(previous, remainingStrokes, remainingItems)) {
+                            clearSelection()
+                        }
+                        invalidate()
+                        return true
+                    }
+
+                    // Resize entire selected area
+                    if (selectionAllowsResize() &&
+                        hypot((paperX - right).toDouble(), (paperY - bottom).toDouble()) <= handleHitR
+                    ) {
+                        areaDrag = AreaDrag(pointer, DragMode.RESIZE, paperX, paperY, RectF(bounds), strokes, items)
+                        return true
+                    }
+
+                    // Move entire selected area
+                    if (paperX >= bounds.left - pad && paperX <= bounds.right + pad &&
+                        paperY >= bounds.top - pad && paperY <= bounds.bottom + pad
+                    ) {
+                        areaDrag = AreaDrag(pointer, DragMode.MOVE, paperX, paperY, RectF(bounds), strokes, items)
+                        return true
+                    }
                 }
             }
 
-            // Hit-test items top-most first
+            // Hit-test items top-most first (accounting for rotation)
             val hit = items.lastOrNull { item ->
-                paperX >= item.x && paperX <= item.x + item.width &&
-                    paperY >= item.y && paperY <= item.y + item.height
+                val cx = item.x + item.width / 2f
+                val cy = item.y + item.height / 2f
+                val (lx, ly) = LassoGeometry.rotatePoint(paperX, paperY, cx, cy, -item.rotation)
+                lx >= item.x && lx <= item.x + item.width &&
+                    ly >= item.y && ly <= item.y + item.height
             }
             if (hit != null) {
-                selectedItemId = hit.id
+                selectedItemIds = setOf(hit.id)
+                selectedStrokeIndices = emptySet()
+                recomputeSelectionBounds()
                 itemDrag = ItemDrag(pointer, hit.id, DragMode.MOVE, paperX, paperY, hit, items)
                 invalidate()
                 return true
@@ -986,22 +1568,23 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
 
         private fun findPlayableHit(paperX: Float, paperY: Float): PaperItem? =
             items.lastOrNull { item ->
+                val cx = item.x + item.width / 2f
+                val cy = item.y + item.height / 2f
+                val (lx, ly) = LassoGeometry.rotatePoint(paperX, paperY, cx, cy, -item.rotation)
                 when (item.kind) {
                     PaperItemKind.AUDIO -> {
-                        val cx = item.x + 26f * density
-                        val cy = item.y + item.height / 2f
-                        hypot((paperX - cx).toDouble(), (paperY - cy).toDouble()) <= 24f * density
+                        val playCx = item.x + 26f * density
+                        val playCy = item.y + item.height / 2f
+                        hypot((lx - playCx).toDouble(), (ly - playCy).toDouble()) <= 24f * density
                     }
 
                     PaperItemKind.VIDEO -> {
-                        val cx = item.x + item.width / 2f
-                        val cy = item.y + item.height / 2f
-                        hypot((paperX - cx).toDouble(), (paperY - cy).toDouble()) <= 28f * density
+                        hypot((lx - cx).toDouble(), (ly - cy).toDouble()) <= 28f * density
                     }
 
                     PaperItemKind.HANZI -> {
-                        paperX >= item.x && paperX <= item.x + item.width &&
-                            paperY >= item.y && paperY <= item.y + item.height
+                        lx >= item.x && lx <= item.x + item.width &&
+                            ly >= item.y && ly <= item.y + item.height
                     }
 
                     else -> false
@@ -1043,9 +1626,17 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
             erasing = null
             itemDrag?.let {
                 items = it.preItems
+                recomputeSelectionBounds()
                 invalidate()
             }
             itemDrag = null
+            if (areaDrag != null || twoFinger != null || lassoing != null || liveTransform != null) {
+                areaDrag = null
+                twoFinger = null
+                lassoing = null
+                liveTransform = null
+                invalidate()
+            }
             mediaTap = null
             scrolling?.let {
                 offset = it.startOffset.coerceIn(0f, maxOffset())
@@ -1059,7 +1650,7 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
             val current = HistorySnapshot(strokes, items)
             if (save(previous.strokes, previous.items)) {
                 pushHistory(redoStack, current)
-                if (items.none { it.id == selectedItemId }) selectedItemId = null
+                clearSelection()
                 updateHistoryButtons()
             } else {
                 undoStack.addLast(previous)
@@ -1071,7 +1662,7 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
             val current = HistorySnapshot(strokes, items)
             if (save(next.strokes, next.items)) {
                 pushHistory(undoStack, current)
-                if (items.none { it.id == selectedItemId }) selectedItemId = null
+                clearSelection()
                 updateHistoryButtons()
             } else {
                 redoStack.addLast(next)
@@ -1085,7 +1676,7 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                 itemsStore.clearAll()
                 cancelGesture()
                 finishing.entries.removeAll { it.value === entry }
-                selectedItemId = null
+                clearSelection()
                 undoStack.clear()
                 redoStack.clear()
                 updateHistoryButtons()

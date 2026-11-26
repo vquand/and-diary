@@ -160,16 +160,21 @@ internal class ToolIconView(
             }
 
             ToolIconKind.SELECT -> {
-                // Crisp pointer cursor
+                // Samsung Notes-style lasso loop with knot & tail
+                rect.set(sx(0.14f), sy(0.16f), sx(0.84f), sy(0.68f))
+                val prevEffect = strokePaint.pathEffect
+                strokePaint.pathEffect = android.graphics.DashPathEffect(
+                    floatArrayOf(size * 0.13f, size * 0.09f),
+                    0f,
+                )
+                canvas.drawOval(rect, strokePaint)
+                strokePaint.pathEffect = prevEffect
+
+                // Lasso knot and trailing rope at bottom-right
+                canvas.drawCircle(sx(0.62f), sy(0.67f), strokeW * 0.85f, fillPaint)
                 path.reset()
-                path.moveTo(sx(0.24f), sy(0.14f))
-                path.lineTo(sx(0.24f), sy(0.82f))
-                path.lineTo(sx(0.43f), sy(0.64f))
-                path.lineTo(sx(0.58f), sy(0.88f))
-                path.lineTo(sx(0.69f), sy(0.82f))
-                path.lineTo(sx(0.54f), sy(0.58f))
-                path.lineTo(sx(0.80f), sy(0.58f))
-                path.close()
+                path.moveTo(sx(0.62f), sy(0.67f))
+                path.quadTo(sx(0.70f), sy(0.82f), sx(0.84f), sy(0.86f))
                 canvas.drawPath(path, strokePaint)
             }
 

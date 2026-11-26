@@ -47,9 +47,9 @@ class DiaryCoreTests {
                 StickerPack("dog", "Dogs", "Friendly dogs"),
             ),
             stickers = listOf(
-                StickerSpec("capybara/happy", "capybara", "", "Capybara Happy", "Happy smiling capybara", listOf("happy", "chubby"), "sheets/capybara.png", 4, 3, 0, 0),
-                StickerSpec("rabbit/happy", "rabbit", "", "Rabbit Happy", "Happy lop-eared rabbit", listOf("happy", "lop"), "sheets/rabbit.png", 4, 3, 0, 0),
-                StickerSpec("dog/samoyed_sleepy", "dog", "", "Samoyed Sleepy", "Sleepy fluffy samoyed", listOf("sleepy", "samoyed"), "sheets/dog.png", 4, 3, 1, 1),
+                StickerSpec("capybara/happy", "capybara", "", "Capybara Happy", "Happy smiling capybara", listOf("happy", "chubby"), "sheets/capybara.webp", 4, 3, 0, 0),
+                StickerSpec("rabbit/happy", "rabbit", "", "Rabbit Happy", "Happy lop-eared rabbit", listOf("happy", "lop"), "sheets/rabbit.webp", 4, 3, 0, 0),
+                StickerSpec("dog/samoyed_sleepy", "dog", "", "Samoyed Sleepy", "Sleepy fluffy samoyed", listOf("sleepy", "samoyed"), "sheets/dog.webp", 4, 3, 1, 1),
             ),
         )
 
@@ -153,5 +153,44 @@ class DiaryCoreTests {
             threw = true
         }
         assertTrue(threw)
+    }
+
+    @Test
+    fun lassoPointInPolygonAndItemIntersectionWorkAccurately() {
+        val square = listOf(0f to 0f, 100f to 0f, 100f to 100f, 0f to 100f)
+        assertTrue(LassoGeometry.pointInPolygon(50f, 50f, square))
+        assertFalse(LassoGeometry.pointInPolygon(150f, 50f, square))
+        assertFalse(LassoGeometry.pointInPolygon(-10f, 50f, square))
+
+        // Item inside lasso
+        assertTrue(LassoGeometry.itemIntersectsLasso(20f, 20f, 40f, 40f, 0f, square))
+        // Item outside lasso
+        assertFalse(LassoGeometry.itemIntersectsLasso(120f, 120f, 40f, 40f, 0f, square))
+        // Rotated item overlapping lasso corner
+        assertTrue(LassoGeometry.itemIntersectsLasso(80f, 80f, 50f, 50f, 45f, square))
+    }
+
+    @Test
+    fun rotationMathAndExportFilenameSanitization() {
+        val (rx, ry) = LassoGeometry.rotatePoint(10f, 0f, 0f, 0f, 90f)
+        assertEquals(0f, rx, 0.01f)
+        assertEquals(10f, ry, 0.01f)
+
+        assertEquals(0f, LassoGeometry.normalizeAngle(360f), 0.01f)
+        assertEquals(-90f, LassoGeometry.normalizeAngle(270f), 0.01f)
+        assertEquals(180f, LassoGeometry.normalizeAngle(-180f), 0.01f)
+
+        assertEquals(
+            "diary_2026-11-26_abc123.png",
+            LassoGeometry.sanitizeExportFileName("diary_2026-11-26_abc123.png", "fallback", "png"),
+        )
+        assertEquals(
+            "my_note.webp",
+            LassoGeometry.sanitizeExportFileName("  my/note.jpg  ", "fallback", "webp"),
+        )
+        assertEquals(
+            "fallback.jpg",
+            LassoGeometry.sanitizeExportFileName("   ", "fallback", "jpg"),
+        )
     }
 }
