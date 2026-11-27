@@ -51,6 +51,7 @@ pub fn completed_hanzi_days(directory: &Path) -> BTreeSet<NaiveDate> {
 fn has_completed_hanzi(json: &str) -> bool {
     let mut in_string = false;
     let mut escaped = false;
+    let mut depth = 0usize;
     let mut obj_start: Option<usize> = None;
 
     for (idx, ch) in json.char_indices() {
@@ -66,14 +67,22 @@ fn has_completed_hanzi(json: &str) -> bool {
         }
         match ch {
             '"' => in_string = true,
-            '{' => obj_start = Some(idx + 1),
+            '{' => {
+                depth += 1;
+                if depth == 1 {
+                    obj_start = Some(idx + 1);
+                }
+            }
             '}' => {
-                if let Some(start) = obj_start.take() {
+                if depth == 1
+                    && let Some(start) = obj_start.take()
+                {
                     let body = &json[start..idx];
                     if object_has_completed_hanzi(body) {
                         return true;
                     }
                 }
+                depth = depth.saturating_sub(1);
             }
             _ => {}
         }

@@ -672,4 +672,126 @@ class DiaryCoreTests {
         // Strokes-only selection (no resizable items) preserves the requested scale.
         assertEquals(3.5f, LassoGeometry.clampGroupScale(3.5f, emptyList(), minWidth = 44f, maxWidth = 600f), 0.001f)
     }
+
+    @Test
+    fun diaryPluginBitmaskMatchesRustFlags() {
+        assertFalse(DiarySettings.isPluginEnabled(0, DiaryPlugin.HANZI))
+        assertFalse(DiarySettings.isPluginEnabled(0, DiaryPlugin.CONTOUR_3D))
+        assertTrue(DiarySettings.isPluginEnabled(1, DiaryPlugin.HANZI))
+        assertFalse(DiarySettings.isPluginEnabled(1, DiaryPlugin.CONTOUR_3D))
+        assertFalse(DiarySettings.isPluginEnabled(2, DiaryPlugin.HANZI))
+        assertTrue(DiarySettings.isPluginEnabled(2, DiaryPlugin.CONTOUR_3D))
+        assertTrue(DiarySettings.isPluginEnabled(3, DiaryPlugin.HANZI))
+        assertTrue(DiarySettings.isPluginEnabled(3, DiaryPlugin.CONTOUR_3D))
+    }
+
+    @Test
+    fun contourDocumentRoundTripsJsonAndStyle() {
+        val doc = ContourDocument(
+            style = ContourRenderStyle.BLOCK,
+            strokes = listOf(
+                ContourStroke(listOf(0.2f to 0.2f, 0.8f to 0.2f, 0.8f to 0.8f, 0.2f to 0.8f, 0.2f to 0.2f), null),
+                ContourStroke(listOf(0.4f to 0.4f, 0.6f to 0.4f, 0.6f to 0.6f, 0.4f to 0.6f, 0.4f to 0.4f), 3),
+            ),
+            yawRad = -1.75f,
+            pitchRad = 1.05f,
+        )
+        val decoded = ContourDocument.fromJson(doc.toJson())
+        assertEquals(ContourRenderStyle.BLOCK, decoded.style)
+        assertEquals(2, decoded.strokes.size)
+        assertNull(decoded.strokes[0].explicitLevel)
+        assertEquals(3, decoded.strokes[1].explicitLevel)
+        assertEquals(5, decoded.strokes[0].points.size)
+        assertEquals(-1.75f, decoded.yawRad, 0.001f)
+        assertEquals(1.05f, decoded.pitchRad, 0.001f)
+
+        // Legacy JSON without yaw/pitch falls back to defaults, and pitch never drops below surface.
+        val legacy = ContourDocument.fromJson("""{"version":1,"style":"smooth","strokes":[],"pitch":-0.8}""")
+        assertEquals(ContourDocument.DEFAULT_YAW_RAD, legacy.yawRad, 0.001f)
+        assertEquals(ContourDocument.MIN_PITCH_RAD, legacy.pitchRad, 0.001f)
+        assertEquals(ContourDocument.MIN_PITCH_RAD, ContourDocument.clampPitch(-1.5f), 0.001f)
+        assertEquals(ContourDocument.MAX_PITCH_RAD, ContourDocument.clampPitch(3.0f), 0.001f)
+    }
+
+    @Test
+    fun contourTerrainEngineInfersNestedLevelsAndBuildsRisingHeightmap() {
+        val outerHill = ContourStroke(
+            listOf(0.15f to 0.20f, 0.55f to 0.20f, 0.55f to 0.80f, 0.15f to 0.80f, 0.15f to 0.20f),
+        )
+        val innerPeak = ContourStroke(
+            listOf(0.25f to 0.35f, 0.45f to 0.35f, 0.45f to 0.65f, 0.25f to 0.65f, 0.25f to 0.35f),
+        )
+        val sideHill = ContourStroke(
+            listOf(0.68f to 0.30f, 0.88f to 0.30f, 0.88f to 0.70f, 0.68f to 0.70f, 0.68f to 0.30f),
+        )
+
+        val levels = ContourTerrainEngine.resolveLevels(listOf(outerHill, innerPeak, sideHill))
+        assertEquals(listOf(1, 2, 1), levels)
+
+        val hm = ContourTerrainEngine.buildHeightmap(listOf(outerHill, innerPeak, sideHill), cols = 40, rows = 30)
+        assertEquals(2, hm.maxLevel)
+        // Outer border is anchored to base plane 0.
+        assertEquals(0f, hm.heightAt(0, 0), 0.001f)
+        // Center of innerPeak (nx=0.35, ny=0.50 -> gx=14, gy=15) rises above level 2 due to summit dome.
+        assertTrue("Expected summit > 2.0, got ${hm.heightAt(14, 15)}", hm.heightAt(14, 15) > 2.0f)
+        // Center of sideHill (nx=0.78, ny=0.50 -> gx=31, gy=15) rises above level 1.
+        assertTrue("Expected side hill > 1.0, got ${hm.heightAt(31, 15)}", hm.heightAt(31, 15) > 1.0f)
+
+        val voxels = ContourTerrainEngine.quantizeForBlocks(hm, blockCols = 16, blockRows = 12)
+        assertEquals(0, voxels.heightAt(0, 0))
+        assertTrue("Expected positive voxel peak", voxels.maxBlocks >= 2)
+    }
+
+    @Test
+    fun contourItemRoundTripsItemsJsonAndIsKeptByMediaPruning() {
+        val dir = Files.createTempDirectory("diary-contour-prune").toFile()
+        try {
+            val activeFile = File(dir, "hill.contour.json").apply { writeText("""{"version":1,"style":"smooth","strokes":[]}""") }
+            val oldRevision = File(dir, "old.contour.json").apply { writeText("""{"version":1,"style":"block","strokes":[]}""") }
+            val item = PaperItem(
+                id = "c1",
+                kind = PaperItemKind.CONTOUR,
+                ref = "hill.contour.json",
+                label = "smooth",
+                durationMs = 3L,
+                x = 20f,
+                y = 40f,
+                width = 240f,
+                height = 180f,
+            )
+            val decoded = PaperItemsStore.decodeItemsJson(PaperItemsStore.encodeItemsJson(listOf(item)))
+            assertEquals(listOf(item), decoded)
+
+            PaperItemsStore.pruneUnusedMediaInDir(dir, listOf(item))
+            assertTrue(activeFile.exists())
+            assertFalse(oldRevision.exists())
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun contourTerrainEngineHandlesDegenerateAndZeroLevelStrokesSafely() {
+        val empty = ContourStroke(emptyList())
+        val singlePoint = ContourStroke(listOf(0.5f to 0.5f))
+        val zeroLoop = ContourStroke(
+            listOf(0.2f to 0.2f, 0.8f to 0.2f, 0.8f to 0.8f, 0.2f to 0.8f, 0.2f to 0.2f),
+            explicitLevel = 0,
+        )
+
+        val hm = ContourTerrainEngine.buildHeightmap(listOf(empty, singlePoint, zeroLoop), cols = 16, rows = 12)
+        assertEquals(0f, hm.maxHeight, 0.001f)
+
+        val voxels = ContourTerrainEngine.quantizeForBlocks(hm, blockCols = 8, blockRows = 6)
+        assertEquals(0, voxels.maxBlocks)
+    }
+
+    @Test
+    fun contour3DRendererPainterOrderSortsFarthestToClosestFromEye() {
+        assertEquals(listOf(0, 1, 2, 3), Contour3DRenderer.painterOrder(4, 2.0f).toList())
+        assertEquals(listOf(3, 2, 1, 0), Contour3DRenderer.painterOrder(4, -1.0f).toList())
+        // Overhead near center: cells on both sides converge toward 0.5f.
+        val overhead = Contour3DRenderer.painterOrder(4, 0.5f).toList()
+        assertEquals(listOf(0, 1, 3, 2), overhead)
+    }
 }

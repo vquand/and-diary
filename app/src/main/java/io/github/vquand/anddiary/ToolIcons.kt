@@ -21,6 +21,7 @@ internal enum class ToolIconKind {
     STICKER,
     MEDIA,
     HANZI,
+    CONTOUR,
     FINGER,
     UNDO,
     REDO,
@@ -416,6 +417,33 @@ internal class ToolIconView(
                 path.reset()
                 path.moveTo(sx(0.38f), sy(0.44f))
                 path.quadTo(sx(0.52f), sy(0.62f), sx(0.72f), sy(0.76f))
+                canvas.drawPath(path, strokePaint)
+            }
+
+            ToolIconKind.CONTOUR -> {
+                // Isometric terrain base + layered topographic mountain silhouette
+                path.reset()
+                path.moveTo(sx(0.10f), sy(0.68f))
+                path.lineTo(sx(0.50f), sy(0.86f))
+                path.lineTo(sx(0.90f), sy(0.68f))
+                canvas.drawPath(path, strokePaint)
+
+                // Mountain profile rising from the base
+                path.reset()
+                path.moveTo(sx(0.16f), sy(0.66f))
+                path.cubicTo(sx(0.28f), sy(0.48f), sx(0.36f), sy(0.44f), sx(0.46f), sy(0.48f))
+                path.cubicTo(sx(0.54f), sy(0.22f), sx(0.66f), sy(0.16f), sx(0.74f), sy(0.36f))
+                path.cubicTo(sx(0.80f), sy(0.50f), sx(0.84f), sy(0.58f), sx(0.86f), sy(0.66f))
+                canvas.drawPath(path, strokePaint)
+
+                // Draped contour bands across the peak
+                path.reset()
+                path.moveTo(sx(0.48f), sy(0.42f))
+                path.quadTo(sx(0.62f), sy(0.46f), sx(0.74f), sy(0.38f))
+                canvas.drawPath(path, strokePaint)
+                path.reset()
+                path.moveTo(sx(0.30f), sy(0.58f))
+                path.quadTo(sx(0.56f), sy(0.66f), sx(0.80f), sy(0.56f))
                 canvas.drawPath(path, strokePaint)
             }
 

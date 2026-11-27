@@ -1,4 +1,4 @@
-use crate::settings::{AppSettings, DateFormat, Palette, ThemeMode, ToolbarMode};
+use crate::settings::{AppSettings, DateFormat, DiaryPlugin, Palette, ThemeMode, ToolbarMode};
 use gpui::{App, FontWeight, IntoElement, Window, div, prelude::*, px, rgb};
 use std::rc::Rc;
 
@@ -7,6 +7,7 @@ pub enum SettingsAction {
     SetTheme(ThemeMode),
     SetToolbar(ToolbarMode),
     SetDateFormat(DateFormat),
+    TogglePlugin(DiaryPlugin),
 }
 
 pub fn settings_page(
@@ -55,6 +56,19 @@ pub fn settings_page(
         )
     });
 
+    let plugin_options = DiaryPlugin::ALL.map(|plugin| {
+        let on_action = on_action.clone();
+        let enabled = current.is_plugin_enabled(plugin);
+        toggle_card(
+            plugin.id(),
+            plugin.label(),
+            plugin.description(),
+            enabled,
+            palette,
+            move |window, app| on_action(SettingsAction::TogglePlugin(plugin), window, app),
+        )
+    });
+
     div()
         .id("settings-scroll")
         .flex_1()
@@ -71,6 +85,12 @@ pub fn settings_page(
                 .flex()
                 .flex_col()
                 .gap(px(24.))
+                .child(section(
+                    "Plugins",
+                    "Optional tools that load into the day toolbox only when enabled.",
+                    palette,
+                    plugin_options,
+                ))
                 .child(section(
                     "Theme",
                     "Choose light, dark, or match your device setting.",
@@ -190,4 +210,79 @@ fn option_card(
                 }),
         )
         .on_click(move |_, window, app| on_select(window, app))
+}
+
+fn toggle_card(
+    id: &'static str,
+    label: &'static str,
+    description: &'static str,
+    enabled: bool,
+    palette: Palette,
+    on_toggle: impl Fn(&mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    div()
+        .id(id)
+        .focusable()
+        .w_full()
+        .min_h(px(56.))
+        .px(px(14.))
+        .py(px(12.))
+        .rounded_md()
+        .border_1()
+        .border_color(rgb(if enabled { palette.accent } else { palette.rule }))
+        .bg(rgb(if enabled { palette.wash } else { palette.paper }))
+        .flex()
+        .items_center()
+        .justify_between()
+        .gap(px(12.))
+        .cursor_pointer()
+        .active(move |style| style.bg(rgb(palette.wash)))
+        .focus_visible(move |style| style.bg(rgb(palette.wash)))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap(px(2.))
+                .child(
+                    div()
+                        .text_size(px(15.))
+                        .font_weight(if enabled {
+                            FontWeight::SEMIBOLD
+                        } else {
+                            FontWeight::NORMAL
+                        })
+                        .text_color(rgb(if enabled { palette.accent } else { palette.text }))
+                        .child(label),
+                )
+                .child(
+                    div()
+                        .text_size(px(12.))
+                        .text_color(rgb(palette.muted))
+                        .child(description),
+                ),
+        )
+        .child(
+            div()
+                .w(px(40.))
+                .h(px(22.))
+                .flex_shrink_0()
+                .rounded_full()
+                .border_1()
+                .border_color(rgb(if enabled { palette.accent } else { palette.rule }))
+                .bg(rgb(if enabled { palette.accent } else { palette.paper }))
+                .px(px(2.))
+                .flex()
+                .items_center()
+                .when(enabled, |track| track.justify_end())
+                .when(!enabled, |track| track.justify_start())
+                .child(
+                    div()
+                        .size(px(16.))
+                        .rounded_full()
+                        .bg(rgb(if enabled { palette.paper } else { palette.muted })),
+                ),
+        )
+        .on_click(move |_, window, app| on_toggle(window, app))
 }

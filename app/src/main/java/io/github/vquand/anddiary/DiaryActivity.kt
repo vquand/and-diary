@@ -143,11 +143,12 @@ class DiaryActivity : NativeActivity() {
             activity: Activity,
             themeCode: Int,
             toolbarCode: Int,
+            pluginsMask: Int,
             lightPalette: IntArray,
             darkPalette: IntArray,
         ) {
             DiarySettings.updatePalettes(lightPalette, darkPalette)
-            DiarySettings.save(activity, themeCode, toolbarCode)
+            DiarySettings.save(activity, themeCode, toolbarCode, pluginsMask)
             activity.runOnUiThread {
                 (activity as? DiaryActivity)?.applySystemBars()
                 GpuiPlatformView.refreshAppearance()

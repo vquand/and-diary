@@ -4,7 +4,9 @@ import android.annotation.SuppressLint
 import android.app.AlertDialog
 import android.app.Dialog
 import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.Canvas
+import android.graphics.Color
 import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.RectF
@@ -14,6 +16,7 @@ import android.os.Build
 import android.util.Log
 import android.util.TypedValue
 import android.view.Gravity
+import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
@@ -41,6 +44,7 @@ import java.time.LocalDate
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
+import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.hypot
@@ -53,6 +57,7 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
     val selectedDate: LocalDate get() = currentDate
     private var palette = DiarySettings.palette(context)
     private var toolbarMode = DiarySettings.toolbarMode(context)
+    private var pluginsMask = DiarySettings.pluginsMask(context)
     private val brushes = DiaryBrushes(context, density)
     private var entry = InkEntry(context, date, brushes)
     private var itemsStore = PaperItemsStore(context, date)
@@ -64,6 +69,7 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
     private var clearDialog: AlertDialog? = null
     private var stickerDialog: Dialog? = null
     private var hanziDialog: Dialog? = null
+    private var contourDialog: Dialog? = null
     private var brushBankDialog: Dialog? = null
     private var exportDialog: Dialog? = null
 
@@ -77,6 +83,9 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
     private val mediaButton = ActionChip(context, R.string.media, ToolIconKind.MEDIA)
     private val hanziButton = ActionChip(context, R.string.hanzi_button, ToolIconKind.HANZI).apply {
         contentDescription = context.getString(R.string.hanzi_description)
+    }
+    private val contourButton = ActionChip(context, R.string.contour_button, ToolIconKind.CONTOUR).apply {
+        contentDescription = context.getString(R.string.contour_description)
     }
     private val fingerButton = ActionChip(context, R.string.finger_ink, ToolIconKind.FINGER)
     private val undoButton = ActionChip(context, R.string.undo, ToolIconKind.UNDO)
@@ -175,6 +184,9 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
             hidePopovers()
             paper.addDailyHanzi()
         }
+        contourButton.setOnClickListener {
+            openContourEditor(existingItem = null)
+        }
 
         fingerButton.setOnClickListener {
             paper.cancelGesture()
@@ -205,7 +217,8 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
             addView(settingsChip, chipParams(marginEndDp = 8))
             addView(stickerButton, chipParams(marginEndDp = 6))
             addView(mediaButton, chipParams(marginEndDp = 6))
-            addView(hanziButton, chipParams(marginEndDp = 10))
+            addView(hanziButton, chipParams(marginEndDp = 6))
+            addView(contourButton, chipParams(marginEndDp = 10))
             addView(View(context), LayoutParams(0, 1, 1f))
             addView(fingerButton, chipParams(marginEndDp = 8))
             addView(undoButton, chipParams(marginEndDp = 6))
@@ -261,6 +274,7 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
     fun refreshAppearance() {
         palette = DiarySettings.palette(context)
         toolbarMode = DiarySettings.toolbarMode(context)
+        pluginsMask = DiarySettings.pluginsMask(context)
         toolbarScroll.setBackgroundColor(palette.wash)
         toolbarRule.setBackgroundColor(palette.rule)
         saveSelectionItem.setTextColor(palette.text)
@@ -288,6 +302,7 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
         mediaPlayback.release()
         stickerDialog?.dismiss()
         hanziDialog?.dismiss()
+        contourDialog?.dismiss()
         brushBankDialog?.dismiss()
         exportDialog?.dismiss()
         clearDialog?.dismiss()
@@ -358,6 +373,7 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
     }
 
     override fun onDetachedFromWindow() {
+        paper.cancelGesture()
         paper.animate().cancel()
         paper.translationX = 0f
         paper.alpha = 1f
@@ -368,6 +384,8 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
         stickerDialog = null
         hanziDialog?.dismiss()
         hanziDialog = null
+        contourDialog?.dismiss()
+        contourDialog = null
         brushBankDialog?.dismiss()
         brushBankDialog = null
         exportDialog?.dismiss()
@@ -406,6 +424,103 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
             },
         )
         updateToolbar()
+    }
+
+    private fun openContourEditor(existingItem: PaperItem?) {
+        hidePopovers()
+        paper.cancelGesture()
+        contourDialog?.dismiss()
+        val initialDoc = existingItem?.let { itemsStore.readContour(it) } ?: ContourDocument()
+        contourDialog = ContourEditorDialog.show(
+            context = context,
+            palette = palette,
+            initialDocument = initialDoc,
+            onConfirm = { doc -> saveContourAsync(existingItem, doc) },
+            onDismiss = {
+                contourDialog = null
+                updateToolbar()
+            },
+        )
+        updateToolbar()
+    }
+
+    private fun saveContourAsync(
+        existingItem: PaperItem?,
+        document: ContourDocument,
+        precomputedHeightmap: ContourHeightmap? = null,
+        precomputedVoxels: VoxelHeightmap? = null,
+    ) {
+        val targetDate = currentDate
+        val targetStore = itemsStore
+        val startGen = clearGenerationOf(targetDate)
+        val centerX = paper.viewportCenterX()
+        val centerY = paper.viewportCenterY()
+        val maxWidth = paper.maxNewItemWidth()
+        ioExecutor.execute {
+            var createdItem: PaperItem? = null
+            try {
+                val item = if (existingItem != null) {
+                    targetStore.updateContour(existingItem, document)
+                } else {
+                    targetStore.createContour(document, centerX, centerY, maxWidth, density)
+                }
+                createdItem = item
+                if (precomputedHeightmap != null) {
+                    val rendered = Contour3DRenderer.render(
+                        document = document,
+                        widthPx = 800,
+                        heightPx = 600,
+                        heightmap = precomputedHeightmap,
+                        voxels = precomputedVoxels,
+                    )
+                    targetStore.cacheBitmap(item, rendered)
+                } else {
+                    targetStore.loadBitmap(item)
+                }
+                post {
+                    if (existingItem != null) paper.clearFinalizingContourPreview(existingItem.id)
+                    if (clearGenerationOf(targetDate) != startGen) {
+                        ioExecutor.execute {
+                            runCatching { targetStore.mediaFile(item).delete() }
+                            targetStore.clearPendingImport(item.ref)
+                        }
+                    } else if (currentDate == targetDate) {
+                        if (existingItem != null) {
+                            paper.replaceItem(existingItem.id, item)
+                        } else {
+                            paper.addImportedItem(item)
+                        }
+                        targetStore.clearPendingImport(item.ref)
+                    } else {
+                        pendingEntryWrites[targetDate] = ioExecutor.submit {
+                            try {
+                                runCatching {
+                                    val existing = targetStore.read()
+                                    val next = if (existingItem != null) {
+                                        existing.map { if (it.id == existingItem.id) item else it }
+                                    } else {
+                                        existing + item
+                                    }
+                                    targetStore.write(next)
+                                }
+                            } finally {
+                                targetStore.clearPendingImport(item.ref)
+                            }
+                        }
+                    }
+                }
+            } catch (error: Exception) {
+                createdItem?.let {
+                    runCatching { targetStore.mediaFile(it).delete() }
+                    targetStore.clearPendingImport(it.ref)
+                }
+                if (existingItem != null) {
+                    post { paper.clearFinalizingContourPreview(existingItem.id) }
+                }
+                Log.e("DiaryContour", "Could not save contour terrain", error)
+                post { Toast.makeText(context, R.string.contour_save_failed, Toast.LENGTH_LONG).show() }
+            }
+        }
     }
 
     private fun openExportSelectionDialog() {
@@ -521,7 +636,7 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
             PaperItemKind.PHOTO -> "image/*"
             PaperItemKind.VIDEO -> "video/*"
             PaperItemKind.AUDIO -> "audio/*"
-            PaperItemKind.STICKER, PaperItemKind.HANZI -> return
+            PaperItemKind.STICKER, PaperItemKind.HANZI, PaperItemKind.CONTOUR -> return
         }
         activity.launchMediaPicker(mime) { uri ->
             if (uri != null) importMediaAsync(uri, kind)
@@ -653,7 +768,16 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
         }
         stickerButton.update(active = stickerDialog?.isShowing == true, enabled = true, palette = palette, toolbarMode = toolbarMode)
         mediaButton.update(active = mediaPopover.visibility == VISIBLE, enabled = true, palette = palette, toolbarMode = toolbarMode)
-        hanziButton.update(active = hanziDialog?.isShowing == true, enabled = true, palette = palette, toolbarMode = toolbarMode)
+        val hanziEnabled = DiarySettings.isPluginEnabled(pluginsMask, DiaryPlugin.HANZI)
+        hanziButton.visibility = if (hanziEnabled) VISIBLE else GONE
+        if (hanziEnabled) {
+            hanziButton.update(active = hanziDialog?.isShowing == true, enabled = true, palette = palette, toolbarMode = toolbarMode)
+        }
+        val contourEnabled = DiarySettings.isPluginEnabled(pluginsMask, DiaryPlugin.CONTOUR_3D)
+        contourButton.visibility = if (contourEnabled) VISIBLE else GONE
+        if (contourEnabled) {
+            contourButton.update(active = contourDialog?.isShowing == true, enabled = true, palette = palette, toolbarMode = toolbarMode)
+        }
         fingerButton.update(active = paper.fingerInk, enabled = true, palette = palette, toolbarMode = toolbarMode)
         moreButton.update(active = moreMenu.visibility == VISIBLE, enabled = true, palette = palette, toolbarMode = toolbarMode)
     }
@@ -689,6 +813,27 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
         val startItem: PaperItem,
         val preItems: List<PaperItem>,
         var moved: Boolean = false,
+    )
+    private data class PreloadedContour(
+        val document: ContourDocument,
+        val heightmap: ContourHeightmap,
+        val voxels: VoxelHeightmap?,
+    )
+    private data class ContourOrbit(
+        val pointerId: Int,
+        val itemId: String,
+        val startItem: PaperItem,
+        val downRawX: Float,
+        val downRawY: Float,
+        val startYaw: Float,
+        val startPitch: Float,
+        var currentYaw: Float,
+        var currentPitch: Float,
+        val document: ContourDocument,
+        val heightmap: ContourHeightmap,
+        val voxels: VoxelHeightmap?,
+        val previewBitmap: Bitmap,
+        val previewCanvas: Canvas,
     )
     private data class MediaTap(val pointerId: Int, val item: PaperItem, val downX: Float, val downY: Float)
     private data class Lassoing(val pointerId: Int, val points: MutableList<Pair<Float, Float>>)
@@ -778,6 +923,10 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
         private var erasing: Erasing? = null
         private var scrolling: Scrolling? = null
         private var itemDrag: ItemDrag? = null
+        private var contourOrbit: ContourOrbit? = null
+        private var pendingOrbitRunnable: Runnable? = null
+        private val preloadedContours = mutableMapOf<String, PreloadedContour>()
+        private val finalizingContourPreviews = mutableMapOf<String, Bitmap>()
         private var areaDrag: AreaDrag? = null
         private var lassoing: Lassoing? = null
         private var twoFinger: TwoFingerTransform? = null
@@ -836,6 +985,8 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
         fun reloadForCurrentDate() {
             cancelGesture()
             loadingBitmaps.clear()
+            preloadedContours.clear()
+            finalizingContourPreviews.clear()
             selectedItemIds = emptySet()
             selectedStrokeIndices = emptySet()
             selectionBounds = null
@@ -866,7 +1017,10 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
         private fun preloadMediaBitmaps() {
             val store = itemsStore
             val pending = items.filter {
-                (it.kind == PaperItemKind.PHOTO || it.kind == PaperItemKind.VIDEO || it.kind == PaperItemKind.STICKER) &&
+                (it.kind == PaperItemKind.PHOTO ||
+                    it.kind == PaperItemKind.VIDEO ||
+                    it.kind == PaperItemKind.STICKER ||
+                    it.kind == PaperItemKind.CONTOUR) &&
                     !store.hasBitmapEntry(it)
             }
             for (item in pending) {
@@ -897,6 +1051,16 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
         fun viewportCenterX(): Float = (width / 2f).coerceAtLeast(120f * density)
         fun viewportCenterY(): Float = offset + (height / 2f).coerceAtLeast(160f * density)
         fun maxNewItemWidth(): Float = (width * 0.58f).coerceAtLeast(160f * density)
+
+        fun clearFinalizingContourPreview(itemId: String) {
+            if (finalizingContourPreviews.remove(itemId) != null) {
+                invalidate()
+            }
+        }
+
+        private fun orbitBitmapFor(itemId: String): Bitmap? =
+            contourOrbit?.takeIf { it.itemId == itemId }?.previewBitmap
+                ?: finalizingContourPreviews[itemId]
 
         fun clearSelection() {
             if (hasSelection || liveTransform != null) {
@@ -1000,6 +1164,19 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                 recomputeSelectionBounds()
                 activeTool = DiaryTool.SELECT
                 updateToolbar()
+                if (item.kind == PaperItemKind.CONTOUR) {
+                    preloadContourAsync(item)
+                }
+                invalidate()
+            }
+        }
+
+        fun replaceItem(itemId: String, updatedItem: PaperItem) {
+            if (items.none { it.id == itemId }) return
+            val previous = HistorySnapshot(strokes, items)
+            val updated = items.map { if (it.id == itemId) updatedItem else it }
+            if (commitChange(previous, strokes, updated)) {
+                recomputeSelectionBounds()
                 invalidate()
             }
         }
@@ -1025,7 +1202,7 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
             if (transform != null && hasSelection) {
                 for (item in items) {
                     if (item.id !in selectedItemIds) {
-                        itemRenderer.drawItem(canvas, item, itemsStore, mediaPlayback.playingAudioId, ::requestItemBitmap)
+                        itemRenderer.drawItem(canvas, item, itemsStore, mediaPlayback.playingAudioId, orbitBitmapFor(item.id), ::requestItemBitmap)
                     }
                 }
                 for (i in strokes.indices) {
@@ -1038,7 +1215,7 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                 canvas.concat(liveMatrix)
                 for (item in items) {
                     if (item.id in selectedItemIds && (item.kind != PaperItemKind.AUDIO || transform.scale == 1f)) {
-                        itemRenderer.drawItem(canvas, item, itemsStore, mediaPlayback.playingAudioId, ::requestItemBitmap)
+                        itemRenderer.drawItem(canvas, item, itemsStore, mediaPlayback.playingAudioId, orbitBitmapFor(item.id), ::requestItemBitmap)
                     }
                 }
                 for (i in strokes.indices) {
@@ -1046,7 +1223,7 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                         renderer.draw(canvas, strokes[i], identity)
                     }
                 }
-                singleSelectedItem()?.let { itemRenderer.drawSelectionHandles(canvas, it) }
+                singleSelectedItem()?.let { itemRenderer.drawSelectionHandles(canvas, it, showCornerHandles = contourOrbit?.itemId != it.id) }
                     ?: selectionBounds?.let { itemRenderer.drawAreaSelectionHandles(canvas, it, selectionAllowsResize()) }
                 canvas.restoreToCount(selRestore)
                 // Draw selected AUDIO items without scaling so live preview matches committed size.
@@ -1062,16 +1239,16 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                                 y = pt[1] - item.height / 2f,
                                 rotation = LassoGeometry.normalizeAngle(item.rotation + transform.rotationDeg),
                             )
-                            itemRenderer.drawItem(canvas, previewItem, itemsStore, mediaPlayback.playingAudioId, ::requestItemBitmap)
+                            itemRenderer.drawItem(canvas, previewItem, itemsStore, mediaPlayback.playingAudioId, null, ::requestItemBitmap)
                         }
                     }
                 }
             } else {
                 for (item in items) {
-                    itemRenderer.drawItem(canvas, item, itemsStore, mediaPlayback.playingAudioId, ::requestItemBitmap)
+                    itemRenderer.drawItem(canvas, item, itemsStore, mediaPlayback.playingAudioId, orbitBitmapFor(item.id), ::requestItemBitmap)
                 }
                 for (stroke in strokes) renderer.draw(canvas, stroke, identity)
-                singleSelectedItem()?.let { itemRenderer.drawSelectionHandles(canvas, it) }
+                singleSelectedItem()?.let { itemRenderer.drawSelectionHandles(canvas, it, showCornerHandles = contourOrbit?.itemId != it.id) }
                     ?: selectionBounds?.let { itemRenderer.drawAreaSelectionHandles(canvas, it, selectionAllowsResize()) }
             }
             lassoing?.let { active ->
@@ -1204,6 +1381,24 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                         }
                         return true
                     }
+                    contourOrbit?.let { orbit ->
+                        val pointerIndex = event.findPointerIndex(orbit.pointerId)
+                        if (pointerIndex != -1) {
+                            val rawX = event.getX(pointerIndex)
+                            val rawY = event.getY(pointerIndex)
+                            val dx = rawX - orbit.downRawX
+                            val dy = rawY - orbit.downRawY
+                            orbit.currentYaw = ContourDocument.normalizeYaw(
+                                orbit.startYaw + dx / (140f * density) * PI.toFloat(),
+                            )
+                            orbit.currentPitch = ContourDocument.clampPitch(
+                                orbit.startPitch + dy / (180f * density) * (PI.toFloat() * 0.5f),
+                            )
+                            renderOrbitPreview(orbit)
+                            invalidate()
+                        }
+                        return true
+                    }
                     lassoing?.let { active ->
                         val pointerIndex = event.findPointerIndex(active.pointerId)
                         if (pointerIndex != -1) {
@@ -1265,6 +1460,7 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                             val dy = cy - drag.downY
                             if (!drag.moved && hypot(dx.toDouble(), dy.toDouble()) > 4f * density) {
                                 drag.moved = true
+                                cancelPendingOrbit()
                             }
                             if (drag.moved) applyItemDrag(drag, dx, dy)
                         }
@@ -1362,7 +1558,25 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                         invalidate()
                     }
 
+                    contourOrbit?.takeIf { it.pointerId == pointer }?.let { orbit ->
+                        contourOrbit = null
+                        if (!canceled) {
+                            val changed = abs(orbit.currentYaw - orbit.startYaw) > 0.002f ||
+                                abs(orbit.currentPitch - orbit.startPitch) > 0.002f
+                            if (changed) {
+                                val finalDoc = orbit.document.copy(
+                                    yawRad = orbit.currentYaw,
+                                    pitchRad = orbit.currentPitch,
+                                )
+                                finalizingContourPreviews[orbit.itemId] = orbit.previewBitmap
+                                saveContourAsync(orbit.startItem, finalDoc, orbit.heightmap, orbit.voxels)
+                            }
+                        }
+                        invalidate()
+                    }
+
                     itemDrag?.takeIf { it.pointerId == pointer }?.let { drag ->
+                        cancelPendingOrbit()
                         itemDrag = null
                         if (canceled) {
                             items = drag.preItems
@@ -1415,6 +1629,15 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                                     PaperItemKind.VIDEO -> playVideo(tap.item)
                                     PaperItemKind.AUDIO -> toggleAudio(tap.item)
                                     PaperItemKind.HANZI -> openHanziPractice(tap.item)
+                                    PaperItemKind.CONTOUR -> {
+                                        selectedItemIds = setOf(tap.item.id)
+                                        selectedStrokeIndices = emptySet()
+                                        recomputeSelectionBounds()
+                                        activeTool = DiaryTool.SELECT
+                                        updateToolbar()
+                                        preloadContourAsync(tap.item)
+                                        invalidate()
+                                    }
                                     else -> Unit
                                 }
                             }
@@ -1444,6 +1667,8 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                         )) != 0)
 
         private fun startTwoFingerTransform(event: MotionEvent) {
+            cancelPendingOrbit()
+            contourOrbit = null
             itemDrag?.let {
                 items = it.preItems
                 recomputeSelectionBounds()
@@ -1702,6 +1927,7 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                 val cx = single.x + single.width / 2f
                 val cy = single.y + single.height / 2f
                 val (localX, localY) = LassoGeometry.rotatePoint(paperX, paperY, cx, cy, -single.rotation)
+                val left = single.x - pad
                 val right = single.x + single.width + pad
                 val top = single.y - pad
                 val bottom = single.y + single.height + pad
@@ -1712,9 +1938,14 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                 } else {
                     Float.POSITIVE_INFINITY
                 }
+                val distEdit = if (single.kind == PaperItemKind.CONTOUR) {
+                    hypot((localX - left).toDouble(), (localY - top).toDouble()).toFloat()
+                } else {
+                    Float.POSITIVE_INFINITY
+                }
 
-                // Pick the closer handle when both are within hit radius
-                if (distDelete <= handleHitR && distDelete <= distResize) {
+                // Pick the closer handle when handles overlap within hit radius
+                if (distDelete <= handleHitR && distDelete <= distResize && distDelete <= distEdit) {
                     if (mediaPlayback.playingAudioId == single.id) stopAudio()
                     val previous = HistorySnapshot(strokes, items)
                     val remaining = items.filterNot { it.id == single.id }
@@ -1725,16 +1956,24 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                     return true
                 }
 
+                if (distEdit <= handleHitR && distEdit <= distResize) {
+                    openContourEditor(single)
+                    return true
+                }
+
                 if (distResize <= handleHitR) {
                     itemDrag = ItemDrag(pointer, single.id, DragMode.RESIZE, paperX, paperY, single, items)
                     return true
                 }
 
-                // Move inside selected item
+                // Move inside selected item (or hold to orbit selected 3D contour)
                 if (localX >= single.x && localX <= single.x + single.width &&
                     localY >= single.y && localY <= single.y + single.height
                 ) {
                     itemDrag = ItemDrag(pointer, single.id, DragMode.MOVE, paperX, paperY, single, items)
+                    if (single.kind == PaperItemKind.CONTOUR) {
+                        scheduleContourOrbit(pointer, single, paperX, paperY - offset)
+                    }
                     return true
                 }
             } else if (hasSelection) {
@@ -1793,6 +2032,9 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                 selectedStrokeIndices = emptySet()
                 recomputeSelectionBounds()
                 itemDrag = ItemDrag(pointer, hit.id, DragMode.MOVE, paperX, paperY, hit, items)
+                if (hit.kind == PaperItemKind.CONTOUR) {
+                    preloadContourAsync(hit)
+                }
                 invalidate()
                 return true
             }
@@ -1816,7 +2058,7 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                         hypot((lx - cx).toDouble(), (ly - cy).toDouble()) <= 28f * density
                     }
 
-                    PaperItemKind.HANZI -> {
+                    PaperItemKind.HANZI, PaperItemKind.CONTOUR -> {
                         lx >= item.x && lx <= item.x + item.width &&
                             ly >= item.y && ly <= item.y + item.height
                     }
@@ -1859,6 +2101,11 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
         }
 
         fun cancelGesture() {
+            cancelPendingOrbit()
+            if (contourOrbit != null) {
+                contourOrbit = null
+                invalidate()
+            }
             drawing?.let { ink.cancelStroke(it.strokeId) }
             drawing = null
             erasing?.let {
@@ -1886,6 +2133,114 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                 invalidate()
             }
             scrolling = null
+        }
+
+        private fun cancelPendingOrbit() {
+            pendingOrbitRunnable?.let { removeCallbacks(it) }
+            pendingOrbitRunnable = null
+        }
+
+        private fun preloadContourAsync(item: PaperItem, onLoaded: ((PreloadedContour) -> Unit)? = null) {
+            preloadedContours[item.ref]?.let { cached ->
+                onLoaded?.invoke(cached)
+                return
+            }
+            val store = itemsStore
+            ioExecutor.execute {
+                val doc = store.readContour(item) ?: return@execute
+                val hm = ContourTerrainEngine.buildHeightmap(doc.strokes)
+                val vox = if (doc.style == ContourRenderStyle.BLOCK) {
+                    ContourTerrainEngine.quantizeForBlocks(hm)
+                } else {
+                    null
+                }
+                val loaded = PreloadedContour(doc, hm, vox)
+                post {
+                    if (itemsStore !== store) return@post
+                    preloadedContours[item.ref] = loaded
+                    onLoaded?.invoke(loaded)
+                }
+            }
+        }
+
+        private fun scheduleContourOrbit(pointer: Int, item: PaperItem, rawX: Float, rawY: Float) {
+            cancelPendingOrbit()
+            preloadContourAsync(item)
+            val runnable = Runnable {
+                pendingOrbitRunnable = null
+                val drag = itemDrag ?: return@Runnable
+                if (!isAttachedToWindow || drag.pointerId != pointer || drag.itemId != item.id || drag.moved || twoFinger != null) {
+                    return@Runnable
+                }
+                val cached = preloadedContours[item.ref]
+                if (cached != null) {
+                    startContourOrbit(pointer, item, rawX, rawY, cached)
+                } else {
+                    preloadContourAsync(item) { loaded ->
+                        val activeDrag = itemDrag
+                        if (isAttachedToWindow &&
+                            activeDrag != null &&
+                            activeDrag.pointerId == pointer &&
+                            activeDrag.itemId == item.id &&
+                            !activeDrag.moved &&
+                            twoFinger == null &&
+                            contourOrbit == null
+                        ) {
+                            startContourOrbit(pointer, item, rawX, rawY, loaded)
+                        }
+                    }
+                }
+            }
+            pendingOrbitRunnable = runnable
+            postDelayed(runnable, 220L)
+        }
+
+        private fun startContourOrbit(
+            pointer: Int,
+            item: PaperItem,
+            rawX: Float,
+            rawY: Float,
+            loaded: PreloadedContour,
+        ) {
+            itemDrag = null
+            performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+            val previewBmp = Bitmap.createBitmap(400, 300, Bitmap.Config.ARGB_8888)
+            val previewCanvas = Canvas(previewBmp)
+            val orbit = ContourOrbit(
+                pointerId = pointer,
+                itemId = item.id,
+                startItem = item,
+                downRawX = rawX,
+                downRawY = rawY,
+                startYaw = loaded.document.yawRad,
+                startPitch = loaded.document.pitchRad,
+                currentYaw = loaded.document.yawRad,
+                currentPitch = loaded.document.pitchRad,
+                document = loaded.document,
+                heightmap = loaded.heightmap,
+                voxels = loaded.voxels,
+                previewBitmap = previewBmp,
+                previewCanvas = previewCanvas,
+            )
+            renderOrbitPreview(orbit)
+            contourOrbit = orbit
+            invalidate()
+        }
+
+        private fun renderOrbitPreview(orbit: ContourOrbit) {
+            orbit.previewBitmap.eraseColor(Color.TRANSPARENT)
+            val previewDoc = orbit.document.copy(
+                yawRad = orbit.currentYaw,
+                pitchRad = orbit.currentPitch,
+            )
+            Contour3DRenderer.draw(
+                canvas = orbit.previewCanvas,
+                document = previewDoc,
+                width = orbit.previewBitmap.width.toFloat(),
+                height = orbit.previewBitmap.height.toFloat(),
+                heightmap = orbit.heightmap,
+                voxels = orbit.voxels,
+            )
         }
 
         fun undo() {
@@ -1919,6 +2274,8 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                 readable = true
                 val storeToClear = itemsStore
                 storeToClear.clearMetadataAndCache()
+                preloadedContours.clear()
+                finalizingContourPreviews.clear()
                 ioExecutor.execute { runCatching { storeToClear.deleteMediaDir() } }
                 cancelGesture()
                 finishing.entries.removeAll { it.value === entry }
