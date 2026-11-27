@@ -40,6 +40,7 @@ dependencies {
     implementation("androidx.ink:ink-storage:$ink")
     implementation("androidx.ink:ink-strokes:$ink")
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20231013")
 }
 
 abstract class BuildRustLibrary @Inject constructor(private val exec: ExecOperations) : DefaultTask() {

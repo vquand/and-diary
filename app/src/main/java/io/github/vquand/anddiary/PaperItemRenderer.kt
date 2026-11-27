@@ -39,6 +39,18 @@ internal class PaperItemRenderer(
         style = Paint.Style.STROKE
         strokeWidth = 2f * density
     }
+    private val lassoStroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = paperPalette.accent
+        style = Paint.Style.STROKE
+        strokeWidth = 2f * density
+        strokeCap = Paint.Cap.ROUND
+        strokeJoin = Paint.Join.ROUND
+        pathEffect = DashPathEffect(floatArrayOf(6f * density, 5f * density), 0f)
+    }
+    private val lassoFill = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = (0x1a shl 24) or (paperPalette.accent and 0x00ffffff)
+        style = Paint.Style.FILL
+    }
     private val badgeFill = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
     private val badgeText = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = paperPalette.paper
@@ -69,12 +81,24 @@ internal class PaperItemRenderer(
         playingAudioId: String?,
         requestBitmap: (PaperItem, PaperItemsStore) -> Unit,
     ) {
+        val rotated = item.rotation != 0f
+        val saveCount = if (rotated) {
+            canvas.save().also {
+                canvas.rotate(item.rotation, item.x + item.width / 2f, item.y + item.height / 2f)
+            }
+        } else {
+            -1
+        }
         rect.set(item.x, item.y, item.x + item.width, item.y + item.height)
         val corner = 8f * density
         when (item.kind) {
             PaperItemKind.STICKER -> {
                 val bmp = itemsStore.cachedBitmap(item)
-                if (bmp != null) canvas.drawBitmap(bmp, null, rect, null)
+                if (bmp != null) {
+                    canvas.drawBitmap(bmp, null, rect, null)
+                } else if (!itemsStore.hasBitmapEntry(item)) {
+                    requestBitmap(item, itemsStore)
+                }
             }
 
             PaperItemKind.PHOTO -> {
@@ -159,6 +183,9 @@ internal class PaperItemRenderer(
             }
 
             PaperItemKind.HANZI -> drawHanziCard(canvas, item, corner, itemsStore)
+        }
+        if (rotated) {
+            canvas.restoreToCount(saveCount)
         }
     }
 
@@ -268,23 +295,59 @@ internal class PaperItemRenderer(
     }
 
     fun drawSelectionHandles(canvas: Canvas, item: PaperItem) {
+        val rotated = item.rotation != 0f
+        val saveCount = if (rotated) {
+            canvas.save().also {
+                canvas.rotate(item.rotation, item.x + item.width / 2f, item.y + item.height / 2f)
+            }
+        } else {
+            -1
+        }
         val pad = 4f * density
         rect.set(item.x - pad, item.y - pad, item.x + item.width + pad, item.y + item.height + pad)
         canvas.drawRoundRect(rect, 6f * density, 6f * density, selectStroke)
+        drawCornerHandles(canvas, rect, allowResize = item.kind != PaperItemKind.AUDIO)
+        if (rotated) {
+            canvas.restoreToCount(saveCount)
+        }
+    }
 
+    fun drawAreaSelectionHandles(canvas: Canvas, bounds: RectF, allowResize: Boolean) {
+        val pad = 6f * density
+        rect.set(bounds.left - pad, bounds.top - pad, bounds.right + pad, bounds.bottom + pad)
+        canvas.drawRoundRect(rect, 8f * density, 8f * density, lassoFill)
+        canvas.drawRoundRect(rect, 8f * density, 8f * density, lassoStroke)
+        drawCornerHandles(canvas, rect, allowResize = allowResize)
+    }
+
+    private fun drawCornerHandles(canvas: Canvas, box: RectF, allowResize: Boolean) {
         val handleR = 12f * density
         badgeFill.color = paperPalette.danger
-        canvas.drawCircle(rect.right, rect.top, handleR, badgeFill)
-        val baseline = rect.top - (badgeText.descent() + badgeText.ascent()) / 2f
-        canvas.drawText("×", rect.right, baseline, badgeText)
+        canvas.drawCircle(box.right, box.top, handleR, badgeFill)
+        val baseline = box.top - (badgeText.descent() + badgeText.ascent()) / 2f
+        canvas.drawText("×", box.right, baseline, badgeText)
 
-        if (item.kind != PaperItemKind.AUDIO) {
+        if (allowResize) {
             badgeFill.color = paperPalette.accent
-            canvas.drawCircle(rect.right, rect.bottom, handleR, badgeFill)
+            canvas.drawCircle(box.right, box.bottom, handleR, badgeFill)
             cardStroke.color = paperPalette.paper
-            canvas.drawCircle(rect.right, rect.bottom, handleR - 2.5f * density, cardStroke)
+            canvas.drawCircle(box.right, box.bottom, handleR - 2.5f * density, cardStroke)
             cardStroke.color = paperPalette.rule
         }
+    }
+
+    fun drawLassoPath(canvas: Canvas, points: List<Pair<Float, Float>>) {
+        if (points.size < 2) return
+        clipPath.reset()
+        clipPath.moveTo(points[0].first, points[0].second)
+        for (i in 1 until points.size) {
+            clipPath.lineTo(points[i].first, points[i].second)
+        }
+        if (points.size >= 3) {
+            clipPath.close()
+            canvas.drawPath(clipPath, lassoFill)
+        }
+        canvas.drawPath(clipPath, lassoStroke)
     }
 
     private fun drawPlayTriangle(canvas: Canvas, cx: Float, cy: Float, r: Float, color: Int) {

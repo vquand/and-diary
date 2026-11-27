@@ -5,27 +5,27 @@ use std::sync::{Arc, LazyLock};
 // Share encoded images and GPUI's decoded-image cache across all visible dates.
 static STICKERS: LazyLock<[Arc<Image>; 13]> = LazyLock::new(|| {
     let bytes: [&[u8]; 13] = [
-        include_bytes!("../assets/stickers/star.png"),
-        include_bytes!("../assets/stickers/heart.png"),
-        include_bytes!("../assets/stickers/flower.png"),
-        include_bytes!("../assets/stickers/sun.png"),
-        include_bytes!("../assets/stickers/important.png"),
-        include_bytes!("../assets/stickers/cat.png"),
-        include_bytes!("../assets/stickers/dog.png"),
-        include_bytes!("../assets/stickers/slime.png"),
-        include_bytes!("../assets/stickers/dragon.png"),
-        include_bytes!("../assets/stickers/sunrise.png"),
-        include_bytes!("../assets/stickers/rain.png"),
-        include_bytes!("../assets/stickers/mist.png"),
-        include_bytes!("../assets/stickers/cloud.png"),
+        include_bytes!("../assets/stickers/star.webp"),
+        include_bytes!("../assets/stickers/heart.webp"),
+        include_bytes!("../assets/stickers/flower.webp"),
+        include_bytes!("../assets/stickers/sun.webp"),
+        include_bytes!("../assets/stickers/important.webp"),
+        include_bytes!("../assets/stickers/cat.webp"),
+        include_bytes!("../assets/stickers/dog.webp"),
+        include_bytes!("../assets/stickers/slime.webp"),
+        include_bytes!("../assets/stickers/dragon.webp"),
+        include_bytes!("../assets/stickers/sunrise.webp"),
+        include_bytes!("../assets/stickers/rain.webp"),
+        include_bytes!("../assets/stickers/mist.webp"),
+        include_bytes!("../assets/stickers/cloud.webp"),
     ];
-    bytes.map(|data| Arc::new(Image::from_bytes(ImageFormat::Png, data.to_vec())))
+    bytes.map(|data| Arc::new(Image::from_bytes(ImageFormat::Webp, data.to_vec())))
 });
 
 static HANZI_BADGE: LazyLock<Arc<Image>> = LazyLock::new(|| {
     Arc::new(Image::from_bytes(
-        ImageFormat::Png,
-        include_bytes!("../assets/stickers/hanzi_done.png").to_vec(),
+        ImageFormat::Webp,
+        include_bytes!("../assets/stickers/hanzi_done.webp").to_vec(),
     ))
 });
 

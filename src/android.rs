@@ -13,13 +13,14 @@ use gpui::{
 use gpui_mobile::{
     android::{jni as android_jni, platform_view::AndroidPlatformViewFactory},
     components::platform_view_element::ManagedPlatformView,
-    platform_view::PlatformViewRegistry,
+    platform_view::{PlatformViewBounds, PlatformViewRegistry},
 };
 use jni::{
     jni_sig, jni_str,
     objects::{JIntArray, JValue},
 };
 use std::{
+    cell::Cell,
     collections::{BTreeMap, BTreeSet},
     path::PathBuf,
     rc::Rc,
@@ -30,10 +31,19 @@ static PENDING_DATE: Mutex<Option<NaiveDate>> = Mutex::new(None);
 
 const INK_VIEW: &str = "diary_ink";
 const HEADER_HEIGHT: f32 = 56.;
+// Sentinel bounds that never match PlatformViewRegistry::hit_test while header scrubbing is active,
+// so gpui-mobile keeps routing touch Move/Up events to GPUI even when the finger slides over the sheet.
+const EMPTY_HIT_BOUNDS: PlatformViewBounds = PlatformViewBounds {
+    x: -1.,
+    y: -1.,
+    width: -1.,
+    height: -1.,
+};
 
 struct DaySheet {
     date: NaiveDate,
     ink: ManagedPlatformView,
+    ink_bounds: Rc<Cell<PlatformViewBounds>>,
     scrub_down_x: Option<f32>,
     scrub_active: bool,
 }
@@ -55,7 +65,13 @@ struct Diary {
 }
 
 impl Diary {
-    fn new(files: PathBuf) -> Self {
+    fn new(files: PathBuf, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        cx.observe_window_activation(window, |diary, window, _| {
+            if !window.is_window_active() {
+                diary.finish_header_scrub(true);
+            }
+        })
+        .detach();
         let directory = files.join("entries");
         let pin_directory = files.join("pins");
         let settings_path = files.join("settings.txt");
@@ -81,6 +97,23 @@ impl Diary {
         }
     }
 
+    fn finish_header_scrub(&mut self, canceled: bool) -> bool {
+        let Some(entry) = &mut self.entry else {
+            return false;
+        };
+        if !entry.scrub_active {
+            return false;
+        }
+        entry.scrub_down_x = None;
+        entry.scrub_active = false;
+        if let Some(handle) = entry.ink.handle() {
+            PlatformViewRegistry::global()
+                .update_view_bounds(handle.id(), entry.ink_bounds.get());
+        }
+        end_header_scrub(canceled);
+        true
+    }
+
     fn calendar(&mut self, cx: &mut Context<Self>) {
         self.entry = None;
         self.return_date = None;
@@ -97,6 +130,7 @@ impl Diary {
         self.entry = Some(DaySheet {
             date,
             ink: ManagedPlatformView::new(INK_VIEW).with_param("date", date.to_string()),
+            ink_bounds: Rc::new(Cell::new(PlatformViewBounds::default())),
             scrub_down_x: None,
             scrub_active: false,
         });
@@ -139,7 +173,9 @@ impl Diary {
             SettingsAction::SetToolbar(toolbar) => self.settings.toolbar = toolbar,
             SettingsAction::SetDateFormat(date_format) => self.settings.date_format = date_format,
         }
-        let _ = settings::save(&self.settings_path, self.settings);
+        if let Err(error) = settings::save(&self.settings_path, self.settings) {
+            eprintln!("could not save settings: {error}");
+        }
         apply_android_settings(self.settings);
         cx.notify();
     }
@@ -336,6 +372,15 @@ impl Render for Diary {
                                                                                         Some(x);
                                                                                     entry.scrub_active =
                                                                                         true;
+                                                                                    if let Some(handle) =
+                                                                                        entry.ink.handle()
+                                                                                    {
+                                                                                        PlatformViewRegistry::global()
+                                                                                            .update_view_bounds(
+                                                                                                handle.id(),
+                                                                                                EMPTY_HIT_BOUNDS,
+                                                                                            );
+                                                                                    }
                                                                                     begin_header_scrub();
                                                                                 }
                                                                             },
@@ -367,18 +412,13 @@ impl Render for Diary {
                                                                     let _ = hold_diary.update(
                                                                         app,
                                                                         |diary, _| {
-                                                                            if let Some(entry) =
-                                                                                &mut diary.entry
-                                                                                && entry.scrub_active
-                                                                            {
-                                                                                window.prevent_default();
-                                                                                entry.scrub_down_x =
-                                                                                    None;
-                                                                                entry.scrub_active =
-                                                                                    false;
-                                                                                end_header_scrub(
+                                                                            if diary
+                                                                                .finish_header_scrub(
                                                                                     canceled,
-                                                                                );
+                                                                                )
+                                                                            {
+                                                                                window
+                                                                                    .prevent_default();
                                                                             }
                                                                         },
                                                                     );
@@ -407,7 +447,37 @@ impl Render for Diary {
                                 .on_click(cx.listener(|diary, _, _, cx| diary.open_settings(cx))),
                         ),
                 )
-                .child(entry.ink.render().w_full().flex_1().min_h_0());
+                .child({
+                    let scrub_active = entry.scrub_active;
+                    let ink_bounds = entry.ink_bounds.clone();
+                    let ink_view = entry.ink.render().size_full();
+                    let ink_id = entry.ink.handle().map(|handle| handle.id());
+                    div()
+                        .relative()
+                        .w_full()
+                        .flex_1()
+                        .min_h_0()
+                        .child(ink_view)
+                        .child(
+                            canvas(
+                                |bounds, _, _| PlatformViewBounds {
+                                    x: bounds.origin.x.as_f32(),
+                                    y: bounds.origin.y.as_f32(),
+                                    width: bounds.size.width.as_f32(),
+                                    height: bounds.size.height.as_f32(),
+                                },
+                                move |_, bounds, _, _| {
+                                    ink_bounds.set(bounds);
+                                    if scrub_active && let Some(id) = ink_id {
+                                        PlatformViewRegistry::global()
+                                            .update_view_bounds(id, EMPTY_HIT_BOUNDS);
+                                    }
+                                },
+                            )
+                            .absolute()
+                            .inset_0(),
+                        )
+                });
         }
 
         let diary = cx.entity().downgrade();
@@ -732,8 +802,8 @@ fn android_main(app: android_activity::AndroidApp) {
     );
     let platform = android_jni::shared_platform().expect("Android platform was initialized");
     Application::with_platform(platform.into_rc()).run(move |app: &mut App| {
-        app.open_window(WindowOptions::default(), move |_, app| {
-            app.new(|_| Diary::new(directory))
+        app.open_window(WindowOptions::default(), move |window, app| {
+            app.new(|cx| Diary::new(directory, window, cx))
         })
         .expect("open diary window");
     });

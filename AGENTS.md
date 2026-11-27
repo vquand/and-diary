@@ -36,6 +36,8 @@ src/stickers.rs             pin and hanzi-badge images embedded for GPUI
 app/                        Android application module
   src/main/java/io/github/vquand/anddiary/
     InkSheet.kt             toolbar, paper, gestures, undo, tools
+    LassoGeometry.kt        lasso hit testing and rotation math
+    SelectionExporter.kt    save a selection to Pictures/Diary
     InkEntry.kt             .ink stroke file
     PaperItems.kt           .items JSON, sticker catalog, media copies, hanzi catalog
     PaperItemRenderer.kt    stickers, photos, media, hanzi cards on the page
@@ -53,7 +55,7 @@ app/                        Android application module
   src/main/java/dev/gpui/mobile/
     GpuiPlatformView.kt     platform view factory
   src/test/java/.../DiaryCoreTests.kt
-assets/stickers/            catalog.json, classic PNGs, sprite sheets
+assets/stickers/            catalog.json, classic WebP, sprite sheets
 assets/hanzi/words.json     practice characters and normalized strokes
 ```
 
@@ -70,7 +72,8 @@ Shipped on the writing page:
 - Pen and brush color, plus pen, brush, and eraser size, live in shared preferences `diary_toolbox`. The eraser has no saved color. Stroke color and brush kind are stored in the `.ink` file, so a later color change affects new strokes only.
 - Undo and redo, 50 snapshots, in memory for the open day. The files on disk hold the latest saved state.
 - Stickers, photo, video, audio, and hanzi cards as paper items.
-- Select: drag to move, corner handle to resize with the aspect ratio locked (audio has no resize handle), delete handle. Tap an audio clip to play it on the page, a video to open it in a dialog, or a hanzi card to practice.
+- Select: freehand lasso over ink and items, drag to move, corner handle to resize with the aspect ratio locked (audio has no resize handle), delete handle. Two fingers rotate, pinch-scale, and pan the selection. Item `rotation` is stored in `.items`. Tap an audio clip to play it on the page, a video to open it in a dialog, or a hanzi card to practice.
+- **Save selection** writes the current selection to `Pictures/Diary` as PNG, JPEG, or WebP. Imported photos are re-encoded as WebP.
 - The page is one ruled sheet, about two viewports tall. `sheetHeight` is `height * 2`, and a resize keeps it from shrinking. It does not grow as you write. Horizontal guides are drawn every 32dp. There is no paper-template picker and no multi-section page.
 - **Delete this diary** clears that day's ink, items, and copied media after confirmation. It does not remove the calendar pin.
 
@@ -85,12 +88,12 @@ Still only in PLAN.md: choosable paper templates (blank, ruled, square grid, 田
 
 ## Data on device
 
-All of this is app-private internal storage (`context.filesDir`). `android:allowBackup="false"`. The manifest has no permissions. Do not add `INTERNET`, analytics, or accounts, and do not turn backup on, unless the task explicitly changes that product decision. Do not log diary contents.
+All of this is app-private internal storage (`context.filesDir`). `android:allowBackup="false"`. The manifest requests no network permission. It declares `WRITE_EXTERNAL_STORAGE` with `maxSdkVersion="28"` so Gallery export can work through Android 9; newer releases use MediaStore. Do not add `INTERNET`, analytics, or accounts, and do not turn backup on, unless the task explicitly changes that product decision. Do not log diary contents.
 
 | Path | Format |
 | --- | --- |
 | `files/entries/YYYY-MM-DD.ink` | Big-endian (`DataOutputStream`). Magic `0x41444931` (`ADI1`), then a stroke count, then records. Each record is brush kind (1 byte; 0 pen, 1 soft brush), ARGB color, size, epsilon, payload length (int), then that many AndroidX `StrokeInputBatch` bytes. The 17-byte record header is the kind byte plus four 4-byte fields. Empty days delete the file. |
-| `files/entries/YYYY-MM-DD.items` | JSON array of `{id, kind, ref, label, durationMs, x, y, width, height, score}`. Kinds: `sticker`, `photo`, `video`, `audio`, `hanzi`. |
+| `files/entries/YYYY-MM-DD.items` | JSON array of `{id, kind, ref, label, durationMs, x, y, width, height, rotation, score}`. `rotation` defaults to 0. Kinds: `sticker`, `photo`, `video`, `audio`, `hanzi`. |
 | `files/media/YYYY-MM-DD/` | Copies of picked media. Item `ref` is the filename. Unused files are pruned when leaving a day. |
 | `files/pins/YYYY-MM-DD.pin` | One byte, the `Pin` discriminant (1–13). Ids are stable. |
 | `files/settings.txt` | `theme=`, `toolbar=`, `date_format=` lines. Missing file means defaults. This is the source of truth. |
@@ -99,7 +102,7 @@ Writes go through a temp file or `AtomicFile`, then rename. Calendar dots appear
 
 Shared preferences sit beside those files. `diary_toolbox` stores pen and brush color and size, plus eraser size. `diary_app_settings` stores `theme_mode` and `toolbar_mode`, written when Rust calls `applySettings`. It does not store the date format. Treat `files/settings.txt` as the source of truth and the preferences as the Android-side mirror.
 
-Sticker ids in `assets/stickers/catalog.json` are what saved items store. Classic pin artwork filenames match `src/pins.rs` and are `include_bytes!`'d as PNG in `src/stickers.rs`. Renaming a file or reusing an id for different art changes old diaries. See [assets/stickers/README.md](assets/stickers/README.md).
+Sticker ids in `assets/stickers/catalog.json` are what saved items store. Classic pin artwork filenames match `src/pins.rs` and are `include_bytes!`'d as WebP in `src/stickers.rs`. Renaming a file or reusing an id for different art changes old diaries. See [assets/stickers/README.md](assets/stickers/README.md).
 
 Hanzi strokes in `words.json` are normalized points in a 0–100 box. `HanziStrokeMatcher` scores a traced stroke against those points. The calendar badge depends on `score > 0` in the items JSON.
 

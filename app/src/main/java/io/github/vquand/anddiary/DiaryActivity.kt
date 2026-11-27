@@ -1,8 +1,10 @@
 package io.github.vquand.anddiary
 
+import android.Manifest
 import android.app.Activity
 import android.app.NativeActivity
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.net.Uri
 import android.os.Build
@@ -18,6 +20,7 @@ import java.util.Locale
 
 class DiaryActivity : NativeActivity() {
     private var pendingMediaCallback: ((Uri?) -> Unit)? = null
+    private var pendingStoragePermissionCallback: ((Boolean) -> Unit)? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -76,8 +79,37 @@ class DiaryActivity : NativeActivity() {
         }
     }
 
+    fun requestLegacyStoragePermission(onResult: (Boolean) -> Unit) {
+        if (Build.VERSION.SDK_INT >= 29) {
+            onResult(true)
+            return
+        }
+        val permission = Manifest.permission.WRITE_EXTERNAL_STORAGE
+        if (checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED) {
+            onResult(true)
+            return
+        }
+        pendingStoragePermissionCallback = onResult
+        requestPermissions(arrayOf(permission), REQUEST_LEGACY_STORAGE)
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray,
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == REQUEST_LEGACY_STORAGE) {
+            val callback = pendingStoragePermissionCallback
+            pendingStoragePermissionCallback = null
+            val granted = grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED
+            callback?.invoke(granted)
+        }
+    }
+
     companion object {
         private const val REQUEST_PICK_MEDIA = 4102
+        private const val REQUEST_LEGACY_STORAGE = 4103
 
         @JvmStatic
         fun edgeToEdgeInsets(activity: Activity): IntArray {
