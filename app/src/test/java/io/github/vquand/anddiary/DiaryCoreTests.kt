@@ -794,4 +794,49 @@ class DiaryCoreTests {
         val overhead = Contour3DRenderer.painterOrder(4, 0.5f).toList()
         assertEquals(listOf(0, 1, 3, 2), overhead)
     }
+
+    @Test
+    fun contourTerrainEngineHandlesOpenShortArcsConcaveWrapsAndMixedLevels() {
+        // Short straight open stroke with gap == perimeter (< 0.16) must stay open, not closed.
+        val shortLine = ContourStroke(
+            listOf(0.20f to 0.20f, 0.24f to 0.20f, 0.28f to 0.20f, 0.32f to 0.20f),
+        )
+        assertFalse(ContourTerrainEngine.isClosedLoop(shortLine.points))
+
+        // Concave C-shaped open arc wrapping around an inner closed hill:
+        // its midpoint is outside the hill, so the hill stays higher than the outer arc.
+        val outerArc = ContourStroke(
+            listOf(
+                0.25f to 0.25f,
+                0.75f to 0.25f,
+                0.75f to 0.75f,
+                0.25f to 0.75f,
+            ),
+        )
+        assertFalse(ContourTerrainEngine.isClosedLoop(outerArc.points))
+        val innerHill = ContourStroke(
+            listOf(
+                0.42f to 0.42f,
+                0.58f to 0.42f,
+                0.58f to 0.58f,
+                0.42f to 0.58f,
+                0.42f to 0.42f,
+            ),
+        )
+        assertTrue(ContourTerrainEngine.isClosedLoop(innerHill.points))
+        // Explicit level combined with auto strokes.
+        val explicitRidge = ContourStroke(
+            listOf(0.48f to 0.48f, 0.52f to 0.52f),
+            explicitLevel = 4,
+        )
+
+        val levels = ContourTerrainEngine.resolveLevels(listOf(outerArc, innerHill, explicitRidge))
+        assertEquals(listOf(1, 1, 4), levels)
+
+        // An open stroke wholly enclosed inside a closed loop rises by nesting depth.
+        val enclosedArc = ContourStroke(
+            listOf(0.46f to 0.48f, 0.50f to 0.50f, 0.54f to 0.52f),
+        )
+        assertEquals(listOf(1, 2), ContourTerrainEngine.resolveLevels(listOf(innerHill, enclosedArc)))
+    }
 }

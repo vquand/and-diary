@@ -349,6 +349,9 @@ private class ContourEditorCanvas(
     private var drawLevel: Int? = null
     private var cachedStrokes: List<ContourStroke>? = null
     private var cachedHeightmap: ContourHeightmap? = null
+    private var cachedResolvedStrokes: List<ContourStroke>? = null
+    private var cachedResolvedLevels: List<Int> = ContourTerrainEngine.resolveLevels(initialDocument.strokes)
+    private var activePointerId: Int = MotionEvent.INVALID_POINTER_ID
     private val activePoints = mutableListOf<Pair<Float, Float>>()
 
     private val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -396,6 +399,10 @@ private class ContourEditorCanvas(
         this.document = document
         this.preview3d = preview3d
         this.drawLevel = drawLevel
+        if (cachedResolvedStrokes != document.strokes) {
+            cachedResolvedStrokes = document.strokes
+            cachedResolvedLevels = ContourTerrainEngine.resolveLevels(document.strokes)
+        }
         invalidate()
     }
 
@@ -446,7 +453,7 @@ private class ContourEditorCanvas(
         }
 
         // Draw committed contour strokes with their resolved elevation labels
-        val resolved = ContourTerrainEngine.resolveLevels(document.strokes)
+        val resolved = cachedResolvedLevels
         for (i in document.strokes.indices) {
             val pts = document.strokes[i].points
             if (pts.size < 2) continue
@@ -484,16 +491,21 @@ private class ContourEditorCanvas(
     @SuppressLint("ClickableViewAccessibility")
     override fun onTouchEvent(event: MotionEvent): Boolean {
         if (preview3d || width <= 0 || height <= 0) return false
-        val nx = (event.x / width.toFloat()).coerceIn(0f, 1f)
-        val ny = (event.y / height.toFloat()).coerceIn(0f, 1f)
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
+                activePointerId = event.getPointerId(0)
+                val nx = (event.getX(0) / width.toFloat()).coerceIn(0f, 1f)
+                val ny = (event.getY(0) / height.toFloat()).coerceIn(0f, 1f)
                 activePoints.clear()
                 activePoints.add(nx to ny)
                 invalidate()
             }
 
             MotionEvent.ACTION_MOVE -> {
+                val idx = event.findPointerIndex(activePointerId)
+                if (idx == -1) return true
+                val nx = (event.getX(idx) / width.toFloat()).coerceIn(0f, 1f)
+                val ny = (event.getY(idx) / height.toFloat()).coerceIn(0f, 1f)
                 val last = activePoints.lastOrNull()
                 if (last == null || hypot((nx - last.first).toDouble(), (ny - last.second).toDouble()) >= 0.012) {
                     activePoints.add(nx to ny)
@@ -501,7 +513,11 @@ private class ContourEditorCanvas(
                 }
             }
 
-            MotionEvent.ACTION_UP -> {
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_POINTER_UP -> {
+                val actionIdx = event.actionIndex
+                if (event.getPointerId(actionIdx) != activePointerId) return true
+                val nx = (event.getX(actionIdx) / width.toFloat()).coerceIn(0f, 1f)
+                val ny = (event.getY(actionIdx) / height.toFloat()).coerceIn(0f, 1f)
                 activePoints.add(nx to ny)
                 val first = activePoints.firstOrNull()
                 val hasMovement = first != null && activePoints.any {
@@ -511,11 +527,13 @@ private class ContourEditorCanvas(
                     onStrokeAdded(ContourStroke(activePoints.toList(), drawLevel))
                 }
                 activePoints.clear()
+                activePointerId = MotionEvent.INVALID_POINTER_ID
                 invalidate()
             }
 
             MotionEvent.ACTION_CANCEL -> {
                 activePoints.clear()
+                activePointerId = MotionEvent.INVALID_POINTER_ID
                 invalidate()
             }
         }

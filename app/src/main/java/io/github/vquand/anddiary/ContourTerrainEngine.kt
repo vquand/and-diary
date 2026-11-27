@@ -166,7 +166,7 @@ internal object ContourTerrainEngine {
             ).toFloat()
         }
         if (perimeter < 0.08f) return false
-        return gap <= 0.16f || gap <= perimeter * 0.22f
+        return (gap <= 0.16f && gap <= perimeter * 0.35f) || gap <= perimeter * 0.22f
     }
 
     fun polygonArea(points: List<Pair<Float, Float>>): Float {
@@ -211,12 +211,20 @@ internal object ContourTerrainEngine {
             if (explicit != null) {
                 explicit.coerceIn(0, 12)
             } else {
-                val sample = representativePoint(strokes[i].points)
+                val pts = strokes[i].points
+                val mid = representativePoint(pts)
                 var depth = 0
                 for (j in strokes.indices) {
                     if (i == j || !closed[j]) continue
                     if (closed[i] && areas[j] <= areas[i] * 1.02f) continue
-                    if (pointInPolygon(sample.first, sample.second, strokes[j].points)) {
+                    val inside = if (closed[i] || pts.size < 2) {
+                        pointInPolygon(mid.first, mid.second, strokes[j].points)
+                    } else {
+                        pointInPolygon(pts.first().first, pts.first().second, strokes[j].points) &&
+                            pointInPolygon(mid.first, mid.second, strokes[j].points) &&
+                            pointInPolygon(pts.last().first, pts.last().second, strokes[j].points)
+                    }
+                    if (inside) {
                         depth++
                     }
                 }
@@ -520,14 +528,8 @@ internal object ContourTerrainEngine {
     }
 
     private fun representativePoint(points: List<Pair<Float, Float>>): Pair<Float, Float> {
-        var sx = 0f
-        var sy = 0f
-        for ((x, y) in points) {
-            sx += x
-            sy += y
-        }
-        val n = points.size.coerceAtLeast(1)
-        return (sx / n) to (sy / n)
+        if (points.isEmpty()) return 0f to 0f
+        return points[points.size / 2]
     }
 
     private fun isNearBorder(pt: Pair<Float, Float>): Boolean =

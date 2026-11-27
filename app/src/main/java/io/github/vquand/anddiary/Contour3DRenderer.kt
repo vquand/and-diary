@@ -19,6 +19,55 @@ import kotlin.math.sqrt
  * (Minecraft-style stacked isometric voxels).
  */
 internal object Contour3DRenderer {
+    private class RenderScratch {
+        val p00 = FloatArray(2)
+        val p10 = FloatArray(2)
+        val p11 = FloatArray(2)
+        val p01 = FloatArray(2)
+        val b00 = FloatArray(2)
+        val b10 = FloatArray(2)
+        val b11 = FloatArray(2)
+        val b01 = FloatArray(2)
+        val cA = FloatArray(2)
+        val cB = FloatArray(2)
+        val path = Path()
+
+        val baseFill = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.FILL
+            color = 0xffcbc5b9.toInt()
+        }
+        val baseEdge = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            color = 0xff3b3732.toInt()
+            strokeJoin = Paint.Join.ROUND
+        }
+        val dashedFrame = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            color = 0x7a575148.toInt()
+        }
+        var lastDashUnitStroke = -1f
+        val quadFill = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
+        val quadSeam = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeJoin = Paint.Join.ROUND
+        }
+        val contourPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            color = 0xff2b2723.toInt()
+            strokeCap = Paint.Cap.ROUND
+        }
+        val wallVPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
+        val wallUPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
+        val facePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
+        val edgePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            color = 0x55272320
+            strokeJoin = Paint.Join.ROUND
+        }
+    }
+
+    private val scratchLocal = ThreadLocal.withInitial { RenderScratch() }
+
     fun render(
         document: ContourDocument,
         widthPx: Int = 800,
@@ -41,11 +90,22 @@ internal object Contour3DRenderer {
         height: Float,
         heightmap: ContourHeightmap = ContourTerrainEngine.buildHeightmap(document.strokes),
         voxels: VoxelHeightmap? = null,
+        gridStep: Int = 1,
     ) {
         val yawRad = ContourDocument.normalizeYaw(document.yawRad)
         val pitchRad = ContourDocument.clampPitch(document.pitchRad)
+        val scratch = scratchLocal.get()!!
         when (document.style) {
-            ContourRenderStyle.SMOOTH -> drawSmoothTerrain(canvas, heightmap, width, height, yawRad, pitchRad)
+            ContourRenderStyle.SMOOTH -> drawSmoothTerrain(
+                canvas,
+                heightmap,
+                width,
+                height,
+                yawRad,
+                pitchRad,
+                gridStep.coerceAtLeast(1),
+                scratch,
+            )
             ContourRenderStyle.BLOCK -> drawBlockTerrain(
                 canvas,
                 voxels ?: ContourTerrainEngine.quantizeForBlocks(heightmap),
@@ -53,6 +113,7 @@ internal object Contour3DRenderer {
                 height,
                 yawRad,
                 pitchRad,
+                scratch,
             )
         }
     }
@@ -147,6 +208,18 @@ internal object Contour3DRenderer {
         }
     }
 
+    private fun sampleCoords(size: Int, step: Int): IntArray {
+        if (step <= 1) return IntArray(size) { it }
+        val list = ArrayList<Int>((size + step - 1) / step + 1)
+        var i = 0
+        while (i < size - 1) {
+            list.add(i)
+            i += step
+        }
+        list.add(size - 1)
+        return list.toIntArray()
+    }
+
     private fun drawSmoothTerrain(
         canvas: Canvas,
         hm: ContourHeightmap,
@@ -154,6 +227,8 @@ internal object Contour3DRenderer {
         height: Float,
         yawRad: Float,
         pitchRad: Float,
+        gridStep: Int,
+        scratch: RenderScratch,
     ) {
         val displayMaxZ = max(hm.maxHeight, max(hm.maxLevel.toFloat(), 1f))
         val zHeightRatio = 0.44f / displayMaxZ
@@ -166,23 +241,15 @@ internal object Contour3DRenderer {
         val frontU = 1f - backU
         val frontV = 1f - backV
 
-        val p00 = FloatArray(2)
-        val p10 = FloatArray(2)
-        val p11 = FloatArray(2)
-        val p01 = FloatArray(2)
-        val path = Path()
+        val p00 = scratch.p00
+        val p10 = scratch.p10
+        val p11 = scratch.p11
+        val p01 = scratch.p01
+        val path = scratch.path
 
         // 1. Draw tilted 3D base plane (matching classic topographic 3D block diagram)
-        val baseFill = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            style = Paint.Style.FILL
-            color = 0xffcbc5b9.toInt()
-        }
-        val baseEdge = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            style = Paint.Style.STROKE
-            color = 0xff3b3732.toInt()
-            strokeWidth = 1.4f * unitStroke
-            strokeJoin = Paint.Join.ROUND
-        }
+        val baseFill = scratch.baseFill
+        val baseEdge = scratch.baseEdge.apply { strokeWidth = 1.4f * unitStroke }
         proj.project(0f, 0f, 0f, p00)
         proj.project(1f, 0f, 0f, p10)
         proj.project(1f, 1f, 0f, p11)
@@ -199,11 +266,11 @@ internal object Contour3DRenderer {
 
         // 2. Subtle dashed elevation reference frame on whichever two walls face away from the camera
         val frameLevels = hm.maxLevel.coerceIn(1, 8)
-        val dashedFrame = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            style = Paint.Style.STROKE
-            color = 0x7a575148.toInt()
-            strokeWidth = 1.0f * unitStroke
-            pathEffect = DashPathEffect(floatArrayOf(5f * unitStroke, 4f * unitStroke), 0f)
+        val dashedFrame = scratch.dashedFrame
+        dashedFrame.strokeWidth = 1.0f * unitStroke
+        if (abs(scratch.lastDashUnitStroke - unitStroke) > 0.05f) {
+            scratch.lastDashUnitStroke = unitStroke
+            dashedFrame.pathEffect = DashPathEffect(floatArrayOf(5f * unitStroke, 4f * unitStroke), 0f)
         }
         val topZ = max(hm.maxHeight, frameLevels.toFloat())
         val corners = arrayOf(backU to backV, frontU to backV, backU to frontV)
@@ -224,18 +291,9 @@ internal object Contour3DRenderer {
         if (hm.maxHeight <= 0.001f) return
 
         // 3. Painter's algorithm back-to-front over the heightmap grid
-        val quadFill = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
-        val quadSeam = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            style = Paint.Style.STROKE
-            strokeWidth = 0.8f * unitStroke
-            strokeJoin = Paint.Join.ROUND
-        }
-        val contourPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            style = Paint.Style.STROKE
-            color = 0xff2b2723.toInt()
-            strokeWidth = 1.55f * unitStroke
-            strokeCap = Paint.Cap.ROUND
-        }
+        val quadFill = scratch.quadFill
+        val quadSeam = scratch.quadSeam.apply { strokeWidth = 0.8f * unitStroke }
+        val contourPaint = scratch.contourPaint.apply { strokeWidth = 1.55f * unitStroke }
 
         // Light vector (normalized) from upper-left-front
         val lx = -0.52f
@@ -246,34 +304,42 @@ internal object Contour3DRenderer {
         val rows = hm.rows
         val invCols = 1f / (cols - 1).toFloat()
         val invRows = 1f / (rows - 1).toFloat()
-        val cA = FloatArray(2)
-        val cB = FloatArray(2)
+        val cA = scratch.cA
+        val cB = scratch.cB
 
-        val gyOrder = painterOrder(rows - 1, proj.eyeV01)
-        val gxOrder = painterOrder(cols - 1, proj.eyeU01)
+        val xCoords = sampleCoords(cols, gridStep)
+        val yCoords = sampleCoords(rows, gridStep)
+        val gyOrder = painterOrder(yCoords.size - 1, proj.eyeV01)
+        val gxOrder = painterOrder(xCoords.size - 1, proj.eyeU01)
 
-        for (gy in gyOrder) {
-            val v0 = gy * invRows
-            val v1 = (gy + 1) * invRows
-            for (gx in gxOrder) {
-                val h00 = hm.heightAt(gx, gy)
-                val h10 = hm.heightAt(gx + 1, gy)
-                val h11 = hm.heightAt(gx + 1, gy + 1)
-                val h01 = hm.heightAt(gx, gy + 1)
+        for (yi in gyOrder) {
+            val gy0 = yCoords[yi]
+            val gy1 = yCoords[yi + 1]
+            val v0 = gy0 * invRows
+            val v1 = gy1 * invRows
+            val cellRows = (gy1 - gy0).coerceAtLeast(1)
+            for (xi in gxOrder) {
+                val gx0 = xCoords[xi]
+                val gx1 = xCoords[xi + 1]
+                val h00 = hm.heightAt(gx0, gy0)
+                val h10 = hm.heightAt(gx1, gy0)
+                val h11 = hm.heightAt(gx1, gy1)
+                val h01 = hm.heightAt(gx0, gy1)
 
                 // Skip completely flat base-plane quads so the grey base plane shows cleanly.
                 if (h00 < 0.02f && h10 < 0.02f && h11 < 0.02f && h01 < 0.02f) continue
 
-                val u0 = gx * invCols
-                val u1 = (gx + 1) * invCols
+                val u0 = gx0 * invCols
+                val u1 = gx1 * invCols
                 proj.project(u0, v0, h00, p00)
                 proj.project(u1, v0, h10, p10)
                 proj.project(u1, v1, h11, p11)
                 proj.project(u0, v1, h01, p01)
 
                 // Surface normal from finite differences
-                val dzdx = ((h10 - h00) + (h11 - h01)) * 0.5f * cols * zHeightRatio
-                val dzdy = ((h01 - h00) + (h11 - h10)) * 0.5f * rows * zHeightRatio
+                val cellCols = (gx1 - gx0).coerceAtLeast(1)
+                val dzdx = ((h10 - h00) + (h11 - h01)) * 0.5f * ((cols - 1).toFloat() / cellCols) * zHeightRatio
+                val dzdy = ((h01 - h00) + (h11 - h10)) * 0.5f * ((rows - 1).toFloat() / cellRows) * zHeightRatio
                 val nx = -dzdx
                 val ny = -dzdy
                 val nz = 1f
@@ -328,28 +394,27 @@ internal object Contour3DRenderer {
         }
 
         // 4. Front cutaway walls along the two front-facing edges when terrain reaches the border
-        fun cutawayPaint(nx: Float, ny: Float): Paint {
+        fun cutawayColor(nx: Float, ny: Float): Int {
             val shade = (0.5f + 0.5f * (nx * lx + ny * ly)).coerceIn(0f, 1f)
             val r = (158f + 42f * shade).toInt().coerceIn(0, 255)
             val g = (150f + 42f * shade).toInt().coerceIn(0, 255)
             val b = (136f + 40f * shade).toInt().coerceIn(0, 255)
-            return Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                style = Paint.Style.FILL
-                color = (0xff shl 24) or (r shl 16) or (g shl 8) or b
-            }
+            return (0xff shl 24) or (r shl 16) or (g shl 8) or b
         }
         val frontRow = if (vDir > 0) rows - 1 else 0
         val frontCol = if (uDir > 0) cols - 1 else 0
-        val wallVPaint = cutawayPaint(0f, vDir.toFloat())
-        val wallUPaint = cutawayPaint(uDir.toFloat(), 0f)
+        val wallVPaint = scratch.wallVPaint.apply { color = cutawayColor(0f, vDir.toFloat()) }
+        val wallUPaint = scratch.wallUPaint.apply { color = cutawayColor(uDir.toFloat(), 0f) }
 
         if (proj.eyeV01 > 1f || proj.eyeV01 < 0f) {
-            for (gx in gxOrder) {
-                val h0 = hm.heightAt(gx, frontRow)
-                val h1 = hm.heightAt(gx + 1, frontRow)
+            for (xi in gxOrder) {
+                val gx0 = xCoords[xi]
+                val gx1 = xCoords[xi + 1]
+                val h0 = hm.heightAt(gx0, frontRow)
+                val h1 = hm.heightAt(gx1, frontRow)
                 if (h0 > 0.02f || h1 > 0.02f) {
-                    val u0 = gx * invCols
-                    val u1 = (gx + 1) * invCols
+                    val u0 = gx0 * invCols
+                    val u1 = gx1 * invCols
                     proj.project(u0, frontV, h0, p00)
                     proj.project(u1, frontV, h1, p10)
                     proj.project(u1, frontV, 0f, p11)
@@ -366,12 +431,14 @@ internal object Contour3DRenderer {
             }
         }
         if (proj.eyeU01 > 1f || proj.eyeU01 < 0f) {
-            for (gy in gyOrder) {
-                val h0 = hm.heightAt(frontCol, gy)
-                val h1 = hm.heightAt(frontCol, gy + 1)
+            for (yi in gyOrder) {
+                val gy0 = yCoords[yi]
+                val gy1 = yCoords[yi + 1]
+                val h0 = hm.heightAt(frontCol, gy0)
+                val h1 = hm.heightAt(frontCol, gy1)
                 if (h0 > 0.02f || h1 > 0.02f) {
-                    val v0 = gy * invRows
-                    val v1 = (gy + 1) * invRows
+                    val v0 = gy0 * invRows
+                    val v1 = gy1 * invRows
                     proj.project(frontU, v0, h0, p00)
                     proj.project(frontU, v1, h1, p10)
                     proj.project(frontU, v1, 0f, p11)
@@ -447,6 +514,7 @@ internal object Contour3DRenderer {
         height: Float,
         yawRad: Float,
         pitchRad: Float,
+        scratch: RenderScratch,
     ) {
         val cols = voxels.cols
         val rows = voxels.rows
@@ -459,23 +527,18 @@ internal object Contour3DRenderer {
         val vDir = if (proj.cosYaw >= 0f) 1 else -1
 
         val unitStroke = (min(width, height) / 460f).coerceAtLeast(0.8f)
-        val facePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
-        val edgePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            style = Paint.Style.STROKE
-            color = 0x55272320
-            strokeWidth = 0.9f * unitStroke
-            strokeJoin = Paint.Join.ROUND
-        }
+        val facePaint = scratch.facePaint
+        val edgePaint = scratch.edgePaint.apply { strokeWidth = 0.9f * unitStroke }
 
-        val p00 = FloatArray(2)
-        val p10 = FloatArray(2)
-        val p11 = FloatArray(2)
-        val p01 = FloatArray(2)
-        val b00 = FloatArray(2)
-        val b10 = FloatArray(2)
-        val b11 = FloatArray(2)
-        val b01 = FloatArray(2)
-        val path = Path()
+        val p00 = scratch.p00
+        val p10 = scratch.p10
+        val p11 = scratch.p11
+        val p01 = scratch.p01
+        val b00 = scratch.b00
+        val b10 = scratch.b10
+        val b11 = scratch.b11
+        val b01 = scratch.b01
+        val path = scratch.path
 
         val invCols = 1f / cols.toFloat()
         val invRows = 1f / rows.toFloat()

@@ -109,13 +109,32 @@ fn read_json_string(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> Str
     out
 }
 
-/// Checks one flat item object body. Quoted values are consumed whole, so a label that
-/// contains `"kind":"hanzi"` or `"score":9` never counts as a field.
+/// Checks one flat item object body. Quoted values and nested objects are consumed whole,
+/// so a label or nested metadata object containing `"kind":"hanzi"` or `"score":9` never counts.
 fn object_has_completed_hanzi(body: &str) -> bool {
     let mut chars = body.chars().peekable();
     let mut is_hanzi = false;
     let mut score = 0u32;
     while let Some(ch) = chars.next() {
+        if ch == '{' {
+            let mut nested = 1usize;
+            while let Some(c) = chars.next() {
+                match c {
+                    '"' => {
+                        let _ = read_json_string(&mut chars);
+                    }
+                    '{' => nested += 1,
+                    '}' => {
+                        nested -= 1;
+                        if nested == 0 {
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            continue;
+        }
         if ch != '"' {
             continue;
         }
@@ -129,6 +148,23 @@ fn object_has_completed_hanzi(body: &str) -> bool {
             let value = read_json_string(&mut chars);
             if key == "kind" {
                 is_hanzi = value == "hanzi";
+            }
+        } else if chars.next_if_eq(&'{').is_some() {
+            let mut nested = 1usize;
+            while let Some(c) = chars.next() {
+                match c {
+                    '"' => {
+                        let _ = read_json_string(&mut chars);
+                    }
+                    '{' => nested += 1,
+                    '}' => {
+                        nested -= 1;
+                        if nested == 0 {
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
             }
         } else {
             let mut token = String::new();
@@ -191,6 +227,14 @@ mod tests {
         // Braces inside quoted labels must not truncate the JSON object scan.
         assert!(has_completed_hanzi(
             r#"[{"kind":"hanzi","label":"note}1\"x","ref":"永","score":88}]"#
+        ));
+
+        // Nested objects must not break brace depth or leak inner score fields.
+        assert!(has_completed_hanzi(
+            r#"[{"kind":"hanzi","meta":{"a":1},"score":90}]"#
+        ));
+        assert!(!has_completed_hanzi(
+            r#"[{"kind":"hanzi","meta":{"score":99},"score":0}]"#
         ));
 
         // Text inside a quoted label is never a field.

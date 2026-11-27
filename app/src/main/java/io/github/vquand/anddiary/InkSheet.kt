@@ -13,6 +13,8 @@ import android.graphics.RectF
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import android.util.TypedValue
 import android.view.Gravity
@@ -62,7 +64,10 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
     private var entry = InkEntry(context, date, brushes)
     private var itemsStore = PaperItemsStore(context, date)
     private var isSwitchingDate = false
+    private val mainHandler = Handler(Looper.getMainLooper())
     private val clearGenerations = mutableMapOf<LocalDate, Int>()
+    private val contourSaveTokens = mutableMapOf<String, Long>()
+    private var nextContourToken = 1L
     private fun clearGenerationOf(date: LocalDate) = clearGenerations[date] ?: 0
     private val paper = Paper()
     private val mediaPlayback = MediaPlayback(context) { paper.invalidate() }
@@ -456,6 +461,12 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
         val centerX = paper.viewportCenterX()
         val centerY = paper.viewportCenterY()
         val maxWidth = paper.maxNewItemWidth()
+        val existingId = existingItem?.id
+        val saveToken = existingId?.let { id ->
+            val token = nextContourToken++
+            contourSaveTokens[id] = token
+            token
+        }
         ioExecutor.execute {
             var createdItem: PaperItem? = null
             try {
@@ -477,48 +488,84 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                 } else {
                     targetStore.loadBitmap(item)
                 }
-                post {
-                    if (existingItem != null) paper.clearFinalizingContourPreview(existingItem.id)
-                    if (clearGenerationOf(targetDate) != startGen) {
-                        ioExecutor.execute {
-                            runCatching { targetStore.mediaFile(item).delete() }
-                            targetStore.clearPendingImport(item.ref)
-                        }
-                    } else if (currentDate == targetDate) {
-                        if (existingItem != null) {
-                            paper.replaceItem(existingItem.id, item)
-                        } else {
-                            paper.addImportedItem(item)
-                        }
-                        targetStore.clearPendingImport(item.ref)
-                    } else {
-                        pendingEntryWrites[targetDate] = ioExecutor.submit {
-                            try {
-                                runCatching {
-                                    val existing = targetStore.read()
-                                    val next = if (existingItem != null) {
-                                        existing.map { if (it.id == existingItem.id) item else it }
-                                    } else {
-                                        existing + item
-                                    }
-                                    targetStore.write(next)
-                                }
-                            } finally {
-                                targetStore.clearPendingImport(item.ref)
-                            }
-                        }
-                    }
-                }
+                commitBackgroundItem(
+                    targetDate = targetDate,
+                    targetStore = targetStore,
+                    startGen = startGen,
+                    existingItemId = existingId,
+                    saveToken = saveToken,
+                    item = item,
+                )
             } catch (error: Exception) {
                 createdItem?.let {
                     runCatching { targetStore.mediaFile(it).delete() }
                     targetStore.clearPendingImport(it.ref)
                 }
-                if (existingItem != null) {
-                    post { paper.clearFinalizingContourPreview(existingItem.id) }
-                }
                 Log.e("DiaryContour", "Could not save contour terrain", error)
-                post { Toast.makeText(context, R.string.contour_save_failed, Toast.LENGTH_LONG).show() }
+                mainHandler.post {
+                    if (existingId != null && contourSaveTokens[existingId] == saveToken) {
+                        paper.clearFinalizingContourPreview(existingId)
+                    }
+                    Toast.makeText(context, R.string.contour_save_failed, Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+    }
+
+    private fun commitBackgroundItem(
+        targetDate: LocalDate,
+        targetStore: PaperItemsStore,
+        startGen: Int,
+        existingItemId: String?,
+        saveToken: Long?,
+        item: PaperItem,
+    ) {
+        mainHandler.post {
+            if (existingItemId != null && saveToken != null && contourSaveTokens[existingItemId] != saveToken) {
+                ioExecutor.execute {
+                    runCatching { targetStore.mediaFile(item).delete() }
+                    targetStore.clearPendingImport(item.ref)
+                }
+                return@post
+            }
+            if (existingItemId != null) {
+                paper.clearFinalizingContourPreview(existingItemId)
+            }
+            if (clearGenerationOf(targetDate) != startGen) {
+                ioExecutor.execute {
+                    runCatching { targetStore.mediaFile(item).delete() }
+                    targetStore.clearPendingImport(item.ref)
+                }
+            } else if (isAttachedToWindow && currentDate == targetDate) {
+                if (existingItemId != null) {
+                    paper.replaceContourContent(existingItemId, item.ref, item.label, item.durationMs)
+                } else {
+                    paper.addImportedItem(item)
+                }
+                targetStore.clearPendingImport(item.ref)
+            } else {
+                // Tracked like stroke writes so switching back to that date waits for it before reading.
+                pendingEntryWrites[targetDate] = ioExecutor.submit {
+                    try {
+                        runCatching {
+                            val existing = targetStore.read()
+                            val next = if (existingItemId != null) {
+                                existing.map { current ->
+                                    if (current.id == existingItemId) {
+                                        current.copy(ref = item.ref, label = item.label, durationMs = item.durationMs)
+                                    } else {
+                                        current
+                                    }
+                                }
+                            } else {
+                                existing + item
+                            }
+                            targetStore.write(next)
+                        }
+                    } finally {
+                        targetStore.clearPendingImport(item.ref)
+                    }
+                }
             }
         }
     }
@@ -654,32 +701,17 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
             try {
                 val item = targetStore.importMedia(uri, kind, centerX, centerY, maxWidth, density)
                 targetStore.loadBitmap(item)
-                post {
-                    if (clearGenerationOf(targetDate) != startGen) {
-                        ioExecutor.execute {
-                            runCatching { targetStore.mediaFile(item).delete() }
-                            targetStore.clearPendingImport(item.ref)
-                        }
-                    } else if (currentDate == targetDate) {
-                        paper.addImportedItem(item)
-                        targetStore.clearPendingImport(item.ref)
-                    } else {
-                        // Tracked like stroke writes so switching back to that date waits for it before reading.
-                        pendingEntryWrites[targetDate] = ioExecutor.submit {
-                            try {
-                                runCatching {
-                                    val existing = targetStore.read()
-                                    targetStore.write(existing + item)
-                                }
-                            } finally {
-                                targetStore.clearPendingImport(item.ref)
-                            }
-                        }
-                    }
-                }
+                commitBackgroundItem(
+                    targetDate = targetDate,
+                    targetStore = targetStore,
+                    startGen = startGen,
+                    existingItemId = null,
+                    saveToken = null,
+                    item = item,
+                )
             } catch (error: Exception) {
                 Log.e("DiaryMedia", "Could not import media", error)
-                post { Toast.makeText(context, R.string.media_import_failed, Toast.LENGTH_LONG).show() }
+                mainHandler.post { Toast.makeText(context, R.string.media_import_failed, Toast.LENGTH_LONG).show() }
             }
         }
     }
@@ -834,6 +866,8 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
         val voxels: VoxelHeightmap?,
         val previewBitmap: Bitmap,
         val previewCanvas: Canvas,
+        var dirty: Boolean = false,
+        var framePending: Boolean = false,
     )
     private data class MediaTap(val pointerId: Int, val item: PaperItem, val downX: Float, val downY: Float)
     private data class Lassoing(val pointerId: Int, val points: MutableList<Pair<Float, Float>>)
@@ -857,6 +891,7 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
         val pivotX: Float,
         val pivotY: Float,
         val allowScale: Boolean,
+        val allowRotate: Boolean,
         val preStrokes: List<Stroke>,
         val preItems: List<PaperItem>,
         var moved: Boolean = false,
@@ -987,6 +1022,7 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
             loadingBitmaps.clear()
             preloadedContours.clear()
             finalizingContourPreviews.clear()
+            contourSaveTokens.clear()
             selectedItemIds = emptySet()
             selectedStrokeIndices = emptySet()
             selectionBounds = null
@@ -1098,6 +1134,9 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
             selectedStrokeIndices.isNotEmpty() ||
                 items.any { it.id in selectedItemIds && it.kind != PaperItemKind.AUDIO }
 
+        private fun selectionAllowsRotate(): Boolean =
+            items.none { it.id in selectedItemIds && it.kind == PaperItemKind.CONTOUR }
+
         private fun recomputeSelectionBounds() {
             if (!hasSelection) {
                 selectionBounds = null
@@ -1171,8 +1210,9 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
             }
         }
 
-        fun replaceItem(itemId: String, updatedItem: PaperItem) {
-            if (items.none { it.id == itemId }) return
+        fun replaceContourContent(itemId: String, ref: String, label: String, durationMs: Long) {
+            val current = items.firstOrNull { it.id == itemId } ?: return
+            val updatedItem = current.copy(ref = ref, label = label, durationMs = durationMs)
             val previous = HistorySnapshot(strokes, items)
             val updated = items.map { if (it.id == itemId) updatedItem else it }
             if (commitChange(previous, strokes, updated)) {
@@ -1294,7 +1334,7 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                             val idx = event.findPointerIndex(pointerId)
                             return idx == -1 || event.getToolType(idx) != MotionEvent.TOOL_TYPE_FINGER
                         }
-                        val penGestureActive = drawing != null || erasing != null ||
+                        val penGestureActive = drawing != null || erasing != null || contourOrbit != null ||
                             (itemDrag?.let { isNonFingerPointer(it.pointerId) } == true) ||
                             (areaDrag?.let { isNonFingerPointer(it.pointerId) } == true) ||
                             (lassoing?.let { it.points.size > 1 || isNonFingerPointer(it.pointerId) } == true)
@@ -1357,7 +1397,11 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                             val midY = (y1 + y2) / 2f
                             val angle = atan2((y2 - y1).toDouble(), (x2 - x1).toDouble())
                             val dist = hypot((x2 - x1).toDouble(), (y2 - y1).toDouble()).toFloat()
-                            val deltaDeg = Math.toDegrees(angle - tf.startAngleRad).toFloat()
+                            val deltaDeg = if (tf.allowRotate) {
+                                Math.toDegrees(angle - tf.startAngleRad).toFloat()
+                            } else {
+                                0f
+                            }
                             val scale = if (tf.allowScale && tf.startDist > 20f * density) {
                                 (dist / tf.startDist).coerceIn(0.25f, 4f)
                             } else {
@@ -1394,8 +1438,18 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                             orbit.currentPitch = ContourDocument.clampPitch(
                                 orbit.startPitch + dy / (180f * density) * (PI.toFloat() * 0.5f),
                             )
-                            renderOrbitPreview(orbit)
-                            invalidate()
+                            orbit.dirty = true
+                            if (!orbit.framePending) {
+                                orbit.framePending = true
+                                postOnAnimation {
+                                    orbit.framePending = false
+                                    if (contourOrbit === orbit && orbit.dirty) {
+                                        orbit.dirty = false
+                                        renderOrbitPreview(orbit, gridStep = 2)
+                                        invalidate()
+                                    }
+                                }
+                            }
                         }
                         return true
                     }
@@ -1564,6 +1618,10 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                             val changed = abs(orbit.currentYaw - orbit.startYaw) > 0.002f ||
                                 abs(orbit.currentPitch - orbit.startPitch) > 0.002f
                             if (changed) {
+                                if (orbit.dirty) {
+                                    orbit.dirty = false
+                                    renderOrbitPreview(orbit, gridStep = 2)
+                                }
                                 val finalDoc = orbit.document.copy(
                                     yawRad = orbit.currentYaw,
                                     pitchRad = orbit.currentPitch,
@@ -1698,6 +1756,7 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                 pivotX = bounds?.centerX() ?: midX,
                 pivotY = bounds?.centerY() ?: midY,
                 allowScale = selectionAllowsResize(),
+                allowRotate = selectionAllowsRotate(),
                 preStrokes = strokes,
                 preItems = items,
             )
@@ -1801,7 +1860,11 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                 val newW = (item.width * itemScale).coerceIn(minW, maxItemW)
                 val ratio = if (item.width > 0f) newW / item.width else 1f
                 val newH = (item.height * ratio).coerceAtLeast(24f * density)
-                val newRot = LassoGeometry.normalizeAngle(item.rotation + transform.rotationDeg)
+                val newRot = if (item.kind == PaperItemKind.CONTOUR) {
+                    0f
+                } else {
+                    LassoGeometry.normalizeAngle(item.rotation + transform.rotationDeg)
+                }
                 val updated = item.copy(
                     x = pt[0] - newW / 2f,
                     y = pt[1] - newH / 2f,
@@ -2222,12 +2285,12 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                 previewBitmap = previewBmp,
                 previewCanvas = previewCanvas,
             )
-            renderOrbitPreview(orbit)
+            renderOrbitPreview(orbit, gridStep = 2)
             contourOrbit = orbit
             invalidate()
         }
 
-        private fun renderOrbitPreview(orbit: ContourOrbit) {
+        private fun renderOrbitPreview(orbit: ContourOrbit, gridStep: Int = 1) {
             orbit.previewBitmap.eraseColor(Color.TRANSPARENT)
             val previewDoc = orbit.document.copy(
                 yawRad = orbit.currentYaw,
@@ -2240,6 +2303,7 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                 height = orbit.previewBitmap.height.toFloat(),
                 heightmap = orbit.heightmap,
                 voxels = orbit.voxels,
+                gridStep = gridStep,
             )
         }
 
@@ -2276,6 +2340,7 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                 storeToClear.clearMetadataAndCache()
                 preloadedContours.clear()
                 finalizingContourPreviews.clear()
+                contourSaveTokens.clear()
                 ioExecutor.execute { runCatching { storeToClear.deleteMediaDir() } }
                 cancelGesture()
                 finishing.entries.removeAll { it.value === entry }

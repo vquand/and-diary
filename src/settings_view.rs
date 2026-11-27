@@ -144,13 +144,14 @@ fn section<const N: usize>(
         .child(div().flex().flex_col().gap(px(8.)).children(options))
 }
 
-fn option_card(
+fn setting_card(
     id: &'static str,
     label: &'static str,
     description: &'static str,
-    selected: bool,
+    active: bool,
     palette: Palette,
-    on_select: impl Fn(&mut Window, &mut App) + 'static,
+    trailing: impl IntoElement,
+    on_click: impl Fn(&mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
     div()
         .id(id)
@@ -161,8 +162,8 @@ fn option_card(
         .py(px(12.))
         .rounded_md()
         .border_1()
-        .border_color(rgb(if selected { palette.accent } else { palette.rule }))
-        .bg(rgb(if selected { palette.wash } else { palette.paper }))
+        .border_color(rgb(if active { palette.accent } else { palette.rule }))
+        .bg(rgb(if active { palette.wash } else { palette.paper }))
         .flex()
         .items_center()
         .justify_between()
@@ -180,12 +181,12 @@ fn option_card(
                 .child(
                     div()
                         .text_size(px(15.))
-                        .font_weight(if selected {
+                        .font_weight(if active {
                             FontWeight::SEMIBOLD
                         } else {
                             FontWeight::NORMAL
                         })
-                        .text_color(rgb(if selected { palette.accent } else { palette.text }))
+                        .text_color(rgb(if active { palette.accent } else { palette.text }))
                         .child(label),
                 )
                 .child(
@@ -195,21 +196,31 @@ fn option_card(
                         .child(description),
                 ),
         )
-        .child(
-            div()
-                .size(px(20.))
-                .flex_shrink_0()
-                .rounded_full()
-                .border_2()
-                .border_color(rgb(if selected { palette.accent } else { palette.rule }))
-                .flex()
-                .items_center()
-                .justify_center()
-                .when(selected, |radio| {
-                    radio.child(div().size(px(10.)).rounded_full().bg(rgb(palette.accent)))
-                }),
-        )
-        .on_click(move |_, window, app| on_select(window, app))
+        .child(trailing)
+        .on_click(move |_, window, app| on_click(window, app))
+}
+
+fn option_card(
+    id: &'static str,
+    label: &'static str,
+    description: &'static str,
+    selected: bool,
+    palette: Palette,
+    on_select: impl Fn(&mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    let radio = div()
+        .size(px(20.))
+        .flex_shrink_0()
+        .rounded_full()
+        .border_2()
+        .border_color(rgb(if selected { palette.accent } else { palette.rule }))
+        .flex()
+        .items_center()
+        .justify_center()
+        .when(selected, |radio| {
+            radio.child(div().size(px(10.)).rounded_full().bg(rgb(palette.accent)))
+        });
+    setting_card(id, label, description, selected, palette, radio, on_select)
 }
 
 fn toggle_card(
@@ -220,69 +231,24 @@ fn toggle_card(
     palette: Palette,
     on_toggle: impl Fn(&mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
-    div()
-        .id(id)
-        .focusable()
-        .w_full()
-        .min_h(px(56.))
-        .px(px(14.))
-        .py(px(12.))
-        .rounded_md()
+    let switch = div()
+        .w(px(40.))
+        .h(px(22.))
+        .flex_shrink_0()
+        .rounded_full()
         .border_1()
         .border_color(rgb(if enabled { palette.accent } else { palette.rule }))
-        .bg(rgb(if enabled { palette.wash } else { palette.paper }))
+        .bg(rgb(if enabled { palette.accent } else { palette.paper }))
+        .px(px(2.))
         .flex()
         .items_center()
-        .justify_between()
-        .gap(px(12.))
-        .cursor_pointer()
-        .active(move |style| style.bg(rgb(palette.wash)))
-        .focus_visible(move |style| style.bg(rgb(palette.wash)))
+        .when(enabled, |track| track.justify_end())
+        .when(!enabled, |track| track.justify_start())
         .child(
             div()
-                .flex_1()
-                .min_w_0()
-                .flex()
-                .flex_col()
-                .gap(px(2.))
-                .child(
-                    div()
-                        .text_size(px(15.))
-                        .font_weight(if enabled {
-                            FontWeight::SEMIBOLD
-                        } else {
-                            FontWeight::NORMAL
-                        })
-                        .text_color(rgb(if enabled { palette.accent } else { palette.text }))
-                        .child(label),
-                )
-                .child(
-                    div()
-                        .text_size(px(12.))
-                        .text_color(rgb(palette.muted))
-                        .child(description),
-                ),
-        )
-        .child(
-            div()
-                .w(px(40.))
-                .h(px(22.))
-                .flex_shrink_0()
+                .size(px(16.))
                 .rounded_full()
-                .border_1()
-                .border_color(rgb(if enabled { palette.accent } else { palette.rule }))
-                .bg(rgb(if enabled { palette.accent } else { palette.paper }))
-                .px(px(2.))
-                .flex()
-                .items_center()
-                .when(enabled, |track| track.justify_end())
-                .when(!enabled, |track| track.justify_start())
-                .child(
-                    div()
-                        .size(px(16.))
-                        .rounded_full()
-                        .bg(rgb(if enabled { palette.paper } else { palette.muted })),
-                ),
-        )
-        .on_click(move |_, window, app| on_toggle(window, app))
+                .bg(rgb(if enabled { palette.paper } else { palette.muted })),
+        );
+    setting_card(id, label, description, enabled, palette, switch, on_toggle)
 }
