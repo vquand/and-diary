@@ -21,7 +21,7 @@ The interface uses warm ivory paper, charcoal text, serif calendar lettering, an
 
 1. Add a `BrushSpec` entry to `BrushBank.all` in `app/src/main/java/io/github/vquand/anddiary/BrushBank.kt` with a unique `id` and the next unused `storageCode` (starting after `20`; never reuse retired codes).
 2. Add a display string in `app/src/main/res/values/strings.xml` and a `ToolIconKind` drawing case in `app/src/main/java/io/github/vquand/anddiary/ToolIcons.kt`.
-3. Drop an optional `stamp.png` into `design/brush-bank/<id>/` and run `python3 tools/import_brush_assets.py` to copy it into `assets/brushes/<id>/stamp.png` (and regenerate star drawables).
+3. Drop an optional `stamp.webp` (or `stamp.png`) into `design/brush-bank/<id>/` and run `python3 tools/import_brush_assets.py` to write a lossless WebP with alpha at `assets/brushes/<id>/stamp.webp` (and regenerate star drawables). The app's minSdk is 26, well above API 18 where Android can decode lossless WebP with alpha.
 4. See [docs/ink-format.md](docs/ink-format.md) for how `.ink` stroke records reference brush storage codes.
 
 ## License

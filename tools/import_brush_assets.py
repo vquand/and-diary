@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Import brush bank star SVGs and stamp PNGs into Android resources/assets.
+"""Import brush bank star SVGs and stamp textures into Android resources/assets.
 
 Usage:
     python3 tools/import_brush_assets.py [--source design/brush-bank]
@@ -158,17 +158,32 @@ def import_assets(source_dir: Path, drawable_dir: Path, assets_dir: Path) -> Non
         if not entry.is_dir():
             continue
         brush_id = entry.name
-        for asset_name in ("stamp.png",):
-            src_png = entry / asset_name
-            if src_png.is_file():
-                out_png = assets_dir / brush_id / asset_name
-                out_png.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(src_png, out_png)
-                print(f"Copied {src_png} -> {out_png}")
+        dest_dir = assets_dir / brush_id
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        dest_webp = dest_dir / "stamp.webp"
+        src_webp = entry / "stamp.webp"
+        src_png = entry / "stamp.png"
+        if src_webp.is_file():
+            shutil.copy2(src_webp, dest_webp)
+            print(f"Copied {src_webp} -> {dest_webp}")
+        elif src_png.is_file():
+            convert_stamp_png_to_webp(src_png, dest_webp)
+            print(f"Converted {src_png} -> {dest_webp}")
+
+
+
+def convert_stamp_png_to_webp(src_png: Path, dest_webp: Path) -> None:
+    """Write a lossless WebP with alpha from a source stamp PNG."""
+    from PIL import Image
+
+    with Image.open(src_png) as image:
+        image = image.convert("RGBA")
+        dest_webp.parent.mkdir(parents=True, exist_ok=True)
+        image.save(dest_webp, "WEBP", lossless=True, quality=100, method=6)
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Import brush bank star SVGs and stamp PNGs.")
+    parser = argparse.ArgumentParser(description="Import brush bank star SVGs and stamp textures as lossless WebP.")
     parser.add_argument("--source", type=Path, default=DEFAULT_SOURCE, help="Source directory (default: design/brush-bank)")
     args = parser.parse_args()
     import_assets(args.source, DRAWABLE_DIR, ASSETS_BRUSHES_DIR)

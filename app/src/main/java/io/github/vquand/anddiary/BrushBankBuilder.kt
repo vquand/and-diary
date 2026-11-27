@@ -185,7 +185,8 @@ internal class AssetAndProceduralTextureStore(context: Context) : TextureBitmapS
     }
 
     private fun loadFromAsset(textureId: String): Bitmap? {
-        val assetPath = "brushes/$textureId/stamp.png"
+        // Lossless WebP with alpha is supported on API 18+; minSdk is 26.
+        val assetPath = "brushes/$textureId/stamp.webp"
         val decoded = try {
             appContext.assets.open(assetPath).use { stream ->
                 BitmapFactory.decodeStream(stream)
