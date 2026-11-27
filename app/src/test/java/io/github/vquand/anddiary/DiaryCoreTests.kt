@@ -401,4 +401,65 @@ class DiaryCoreTests {
         assertEquals(90f to true, PaperItemsStore.exifTransform(ExifInterface.ORIENTATION_TRANSPOSE))
         assertEquals(-90f to true, PaperItemsStore.exifTransform(ExifInterface.ORIENTATION_TRANSVERSE))
     }
+
+    private val finger = 1
+    private val stylus = 2
+
+    @Test
+    fun twoFingerTransformRequiresTwoFingersAndNoPenGesture() {
+        assertTrue(LassoGeometry.canStartTwoFingerTransform(intArrayOf(finger, finger), true, false, false))
+        // Palm (finger) landing while the S Pen is down must not start the transform.
+        assertFalse(LassoGeometry.canStartTwoFingerTransform(intArrayOf(stylus, finger), true, false, false))
+        assertFalse(LassoGeometry.canStartTwoFingerTransform(intArrayOf(finger, stylus), true, false, false))
+        assertFalse(LassoGeometry.canStartTwoFingerTransform(intArrayOf(finger, finger), true, false, true))
+        assertFalse(LassoGeometry.canStartTwoFingerTransform(intArrayOf(finger, finger), true, true, false))
+        assertFalse(LassoGeometry.canStartTwoFingerTransform(intArrayOf(finger, finger), false, false, false))
+        assertFalse(LassoGeometry.canStartTwoFingerTransform(intArrayOf(finger), true, false, false))
+    }
+
+    @Test
+    fun restingFingersAreNotAMeaningfulTransform() {
+        assertFalse(LassoGeometry.isTransformMeaningful(1f, 1.005f, 0.2f))
+        assertTrue(LassoGeometry.isTransformMeaningful(12f, 1f, 0f))
+        assertTrue(LassoGeometry.isTransformMeaningful(0f, 1.1f, 0f))
+        assertTrue(LassoGeometry.isTransformMeaningful(0f, 1f, 5f))
+        assertTrue(LassoGeometry.isIdentityTransform(0.1f, -0.1f, 1.001f, 0.1f))
+        assertFalse(LassoGeometry.isIdentityTransform(3f, 0f, 1f, 0f))
+        assertFalse(LassoGeometry.isIdentityTransform(0f, 0f, 1.05f, 0f))
+        assertFalse(LassoGeometry.isIdentityTransform(0f, 0f, 1f, 2f))
+    }
+
+    @Test
+    fun areaDragScaleUsesDominantAxis() {
+        // Wide selection follows horizontal drag.
+        assertEquals(1.5f, LassoGeometry.areaDragScale(200f, 100f, 100f, 0f), 0.001f)
+        // Tall narrow selection follows vertical drag; horizontal does nothing.
+        assertEquals(1.5f, LassoGeometry.areaDragScale(50f, 200f, 0f, 100f), 0.001f)
+        assertEquals(1f, LassoGeometry.areaDragScale(50f, 200f, 100f, 0f), 0.001f)
+        // Clamped.
+        assertEquals(0.25f, LassoGeometry.areaDragScale(100f, 100f, -1000f, 0f), 0.001f)
+        assertEquals(4f, LassoGeometry.areaDragScale(100f, 100f, 1000f, 0f), 0.001f)
+    }
+
+    @Test
+    fun fastStrokeCrossingNarrowLassoIsDetectedBySegments() {
+        val narrow = listOf(40f to 0f, 60f to 0f, 60f to 100f, 40f to 100f)
+        // Samples sit on both sides of the lasso, none inside.
+        val samples = listOf(10f to 50f, 90f to 50f)
+        assertFalse(samples.any { LassoGeometry.pointInPolygon(it.first, it.second, narrow) })
+        assertTrue(LassoGeometry.polylineIntersectsPolygon(samples, narrow))
+        // A polyline entirely outside does not hit.
+        assertFalse(LassoGeometry.polylineIntersectsPolygon(listOf(0f to 150f, 100f to 150f), narrow))
+        assertFalse(LassoGeometry.polylineIntersectsPolygon(listOf(10f to 50f), narrow))
+    }
+
+    @Test
+    fun orientationWrapStaysInHalfOpenRange() {
+        val twoPi = (2.0 * Math.PI).toFloat()
+        for (v in listOf(0f, -1e-9f, -1e-12f, -0.5f, 7.5f, twoPi, -twoPi, 3f * twoPi + 0.1f)) {
+            val o = LassoGeometry.wrapOrientation(v)
+            assertTrue("wrap($v)=$o", o >= 0f && o < twoPi)
+        }
+        assertEquals(0.5f, LassoGeometry.wrapOrientation(twoPi + 0.5f), 0.001f)
+    }
 }

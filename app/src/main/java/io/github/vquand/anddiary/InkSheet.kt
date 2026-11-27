@@ -1060,9 +1060,15 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                     if (first) cancelGesture()
 
                     // Two-finger rotate & scale on any active selection (single sticker/item or lasso area).
-                    if (!first && hasSelection && event.pointerCount == 2 && !stylusEraser && drawing == null && erasing == null) {
-                        startTwoFingerTransform(event)
-                        return true
+                    if (!first && event.pointerCount == 2) {
+                        val penGestureActive = drawing != null || erasing != null ||
+                            lassoing != null || areaDrag != null ||
+                            (itemDrag != null && event.getToolType(event.findPointerIndex(itemDrag!!.pointerId).coerceAtLeast(0)) != MotionEvent.TOOL_TYPE_FINGER)
+                        val toolTypes = intArrayOf(event.getToolType(0), event.getToolType(1))
+                        if (LassoGeometry.canStartTwoFingerTransform(toolTypes, hasSelection, stylusEraser, penGestureActive)) {
+                            startTwoFingerTransform(event)
+                            return true
+                        }
                     }
 
                     if (activeTool == DiaryTool.SELECT && first && !stylusEraser) {
@@ -1123,15 +1129,20 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                             } else {
                                 1f
                             }
+                            val tx = midX - tf.startMidX
+                            val ty = midY - tf.startMidY
                             liveTransform = SelectionTransform(
                                 pivotX = tf.pivotX,
                                 pivotY = tf.pivotY,
-                                translateX = midX - tf.startMidX,
-                                translateY = midY - tf.startMidY,
+                                translateX = tx,
+                                translateY = ty,
                                 scale = scale,
                                 rotationDeg = deltaDeg,
                             )
-                            tf.moved = true
+                            if (!tf.moved) {
+                                val translatePx = hypot(tx.toDouble(), ty.toDouble()).toFloat()
+                                tf.moved = LassoGeometry.isTransformMeaningful(translatePx, scale, deltaDeg, thresholdPx = 4f * density)
+                            }
                             invalidate()
                         }
                         return true
@@ -1172,7 +1183,8 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
 
                                     DragMode.RESIZE -> {
                                         val baseW = drag.startBounds.width().coerceAtLeast(24f * density)
-                                        val scale = ((baseW + dx) / baseW).coerceIn(0.25f, 4f)
+                                        val baseH = drag.startBounds.height().coerceAtLeast(24f * density)
+                                        val scale = LassoGeometry.areaDragScale(baseW, baseH, dx, dy)
                                         SelectionTransform(
                                             pivotX = drag.startBounds.left,
                                             pivotY = drag.startBounds.top,
@@ -1260,7 +1272,9 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                         twoFinger = null
                         val activeTransform = liveTransform
                         liveTransform = null
-                        if (!canceled && tf.moved && activeTransform != null) {
+                        if (!canceled && tf.moved && activeTransform != null &&
+                            !LassoGeometry.isIdentityTransform(activeTransform.translateX, activeTransform.translateY, activeTransform.scale, activeTransform.rotationDeg)
+                        ) {
                             commitSelectionTransform(activeTransform, tf.preStrokes, tf.preItems)
                         }
                         invalidate()
@@ -1437,6 +1451,16 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                         break
                     }
                 }
+                if (!matched) {
+                    // Fall back to segment-segment intersection for fast strokes
+                    // whose samples straddle a narrow lasso without landing inside.
+                    val samples = mutableListOf<Pair<Float, Float>>()
+                    for (p in 0 until inputs.size) {
+                        inputs.populate(p, scratch)
+                        samples.add(scratch.x to scratch.y)
+                    }
+                    matched = LassoGeometry.polylineIntersectsPolygon(samples, points)
+                }
                 if (matched) hitStrokes.add(i)
             }
 
@@ -1469,6 +1493,17 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
             var groupMaxX = Float.NEGATIVE_INFINITY
             var groupMaxY = Float.NEGATIVE_INFINITY
 
+            // Clamp transform.scale once for the whole selection based on item limits,
+            // so all members (strokes + items) use the same effective scale.
+            var clampedScale = transform.scale
+            for (item in preItems) {
+                if (item.id !in selectedItemIds) continue
+                if (item.kind == PaperItemKind.AUDIO) continue
+                val lo = minW / item.width
+                val hi = maxItemW / item.width
+                clampedScale = clampedScale.coerceIn(lo.coerceAtMost(1f), hi.coerceAtLeast(1f))
+            }
+
             val prelimItems = preItems.map { item ->
                 if (item.id !in selectedItemIds) return@map item
                 val cx = item.x + item.width / 2f
@@ -1476,7 +1511,7 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                 pt[0] = cx
                 pt[1] = cy
                 matrix.mapPoints(pt)
-                val itemScale = if (item.kind == PaperItemKind.AUDIO) 1f else transform.scale
+                val itemScale = if (item.kind == PaperItemKind.AUDIO) 1f else clampedScale
                 val newW = (item.width * itemScale).coerceIn(minW, maxItemW)
                 val ratio = if (item.width > 0f) newW / item.width else 1f
                 val newH = (item.height * ratio).coerceAtLeast(24f * density)
@@ -1539,7 +1574,7 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
             }
 
             val nextStrokes = preStrokes.mapIndexed { idx, stroke ->
-                if (idx !in selectedStrokeIndices) stroke else transformStroke(stroke, matrix, transform.scale, transform.rotationDeg)
+                if (idx !in selectedStrokeIndices) stroke else transformStroke(stroke, matrix, clampedScale, transform.rotationDeg)
             }
 
             val previous = HistorySnapshot(preStrokes, preItems)
@@ -1560,16 +1595,13 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
             val scratch = StrokeInput()
             val pt = FloatArray(2)
             val rotRad = Math.toRadians(rotationDeg.toDouble()).toFloat()
-            val twoPi = (2.0 * Math.PI).toFloat()
             for (i in 0 until inputs.size) {
                 inputs.populate(i, scratch)
                 pt[0] = scratch.x
                 pt[1] = scratch.y
                 matrix.mapPoints(pt)
                 val orientation = if (scratch.hasOrientation) {
-                    var o = (scratch.orientationRadians + rotRad) % twoPi
-                    if (o < 0f) o += twoPi
-                    o
+                    LassoGeometry.wrapOrientation(scratch.orientationRadians + rotRad)
                 } else {
                     StrokeInput.NO_ORIENTATION
                 }

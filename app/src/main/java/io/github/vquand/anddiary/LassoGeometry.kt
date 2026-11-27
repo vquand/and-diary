@@ -1,9 +1,143 @@
 package io.github.vquand.anddiary
 
+import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.sin
 
 internal object LassoGeometry {
+
+    // MotionEvent.TOOL_TYPE_FINGER == 1 (compile-time constant, safe for plain JVM tests).
+    private const val TOOL_TYPE_FINGER = 1
+
+    /**
+     * Returns true when a two-finger rotate/scale gesture may start.
+     * Both pointers must be [TOOL_TYPE_FINGER], there must be an active selection,
+     * the stylus eraser must not be active, and no pen-driven gesture (drawing,
+     * erasing, lassoing, single-pointer drag) may be in progress.
+     */
+    fun canStartTwoFingerTransform(
+        toolTypes: IntArray,
+        hasSelection: Boolean,
+        stylusEraser: Boolean,
+        penGestureActive: Boolean,
+    ): Boolean {
+        if (!hasSelection) return false
+        if (stylusEraser) return false
+        if (penGestureActive) return false
+        if (toolTypes.size != 2) return false
+        return toolTypes[0] == TOOL_TYPE_FINGER && toolTypes[1] == TOOL_TYPE_FINGER
+    }
+
+    /**
+     * Returns true when a two-finger transform has moved enough to be meaningful.
+     * Once this returns true for a gesture, stay moved, but [isIdentityTransform]
+     * should be checked again at commit time to avoid no-op undo steps.
+     *
+     * @param translatePx  midpoint translation in pixels
+     * @param scale        pinch scale factor (1 = no change)
+     * @param rotationDeg  rotation in degrees
+     * @param thresholdPx  minimum translation distance (default 4dp worth of px)
+     * @param scaleEpsilon minimum |scale - 1| to count (default 0.02)
+     * @param rotationDegEpsilon minimum |rotation| in degrees (default 1.5)
+     */
+    fun isTransformMeaningful(
+        translatePx: Float,
+        scale: Float,
+        rotationDeg: Float,
+        thresholdPx: Float = 4f,
+        scaleEpsilon: Float = 0.02f,
+        rotationDegEpsilon: Float = 1.5f,
+    ): Boolean {
+        if (translatePx > thresholdPx) return true
+        if (abs(scale - 1f) > scaleEpsilon) return true
+        if (abs(rotationDeg) > rotationDegEpsilon) return true
+        return false
+    }
+
+    /**
+     * Returns true when the final transform is effectively identity
+     * (no visible change), so the commit can be skipped entirely.
+     */
+    fun isIdentityTransform(
+        translateX: Float,
+        translateY: Float,
+        scale: Float,
+        rotationDeg: Float,
+        thresholdPx: Float = 0.5f,
+        scaleEpsilon: Float = 0.005f,
+        rotationDegEpsilon: Float = 0.3f,
+    ): Boolean {
+        if (abs(translateX) > thresholdPx || abs(translateY) > thresholdPx) return false
+        if (abs(scale - 1f) > scaleEpsilon) return false
+        if (abs(rotationDeg) > rotationDegEpsilon) return false
+        return true
+    }
+
+    /**
+     * Computes the scale for an area-drag resize, using whichever axis (width or height)
+     * is larger so a drag in either direction is effective.
+     *
+     * @param baseW   the starting width of the selection (should already be coerced to >= minBase)
+     * @param baseH   the starting height of the selection (should already be coerced to >= minBase)
+     * @param dx      horizontal drag delta in pixels
+     * @param dy      vertical drag delta in pixels
+     * @param minScale  lower clamp for the returned scale
+     * @param maxScale  upper clamp for the returned scale
+     */
+    fun areaDragScale(
+        baseW: Float,
+        baseH: Float,
+        dx: Float,
+        dy: Float,
+        minScale: Float = 0.25f,
+        maxScale: Float = 4f,
+    ): Float {
+        return if (baseW >= baseH) {
+            ((baseW + dx) / baseW).coerceIn(minScale, maxScale)
+        } else {
+            ((baseH + dy) / baseH).coerceIn(minScale, maxScale)
+        }
+    }
+
+    /**
+     * Returns true if the line segment (ax,ay)→(bx,by) intersects (cx,cy)→(dx,dy).
+     */
+    fun segmentsIntersect(
+        ax: Float, ay: Float, bx: Float, by: Float,
+        cx: Float, cy: Float, dx: Float, dy: Float,
+    ): Boolean {
+        val d1x = bx - ax; val d1y = by - ay
+        val d2x = dx - cx; val d2y = dy - cy
+        val denom = d1x * d2y - d1y * d2x
+        if (denom == 0f) return false // parallel
+        val t = ((cx - ax) * d2y - (cy - ay) * d2x) / denom
+        val u = ((cx - ax) * d1y - (cy - ay) * d1x) / denom
+        return t in 0f..1f && u in 0f..1f
+    }
+
+    /**
+     * Returns true if the polyline formed by [samples] intersects the closed [polygon]
+     * boundary (any consecutive pair of sample points crosses any polygon edge).
+     */
+    fun polylineIntersectsPolygon(
+        samples: List<Pair<Float, Float>>,
+        polygon: List<Pair<Float, Float>>,
+    ): Boolean {
+        if (samples.size < 2 || polygon.size < 3) return false
+        for (s in 0 until samples.size - 1) {
+            val (ax, ay) = samples[s]
+            val (bx, by) = samples[s + 1]
+            var pj = polygon.size - 1
+            for (pi in polygon.indices) {
+                val (cx, cy) = polygon[pi]
+                val (dx, dy) = polygon[pj]
+                if (segmentsIntersect(ax, ay, bx, by, cx, cy, dx, dy)) return true
+                pj = pi
+            }
+        }
+        return false
+    }
+
     /**
      * Standard ray-casting point-in-polygon test.
      * Returns true if (px, py) is inside the closed polygon defined by [polygon].
@@ -191,6 +325,19 @@ internal object LassoGeometry {
             else -> 0f
         }
         return shiftX to shiftY
+    }
+
+    /**
+     * Wraps an orientation value in radians so it stays in [0, 2π).
+     * Handles the edge case where float rounding leaves the value
+     * at exactly 2π after adding the correction for negative values.
+     */
+    fun wrapOrientation(orientationRadians: Float): Float {
+        val twoPi = (2.0 * Math.PI).toFloat()
+        var o = orientationRadians % twoPi
+        if (o < 0f) o += twoPi
+        if (o >= twoPi) o -= twoPi
+        return o
     }
 
     /**

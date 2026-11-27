@@ -12,7 +12,7 @@ Diary is for people who want a private handwriting journal on a tablet: daily pa
 - Erase with the **Eraser**, or hold the side button on an S Pen to erase while the button is down. **Undo** and **Redo** cover the last 50 changes.
 - Scroll the ruled page with a finger. Turn on **Finger** when you want to draw with a fingertip, which is handy on a phone.
 - Drop in stickers from five packs (capybara, lop rabbit, dogs, fluffy cats, and a classic set: 61 in all). Search by name or a tag such as happy, sleepy, or rain. The artwork is WebP.
-- Attach a photo, video, or audio clip from the document picker. The app keeps its own copy, and photos are stored as WebP. **Select** draws a lasso around ink and items, then moves that area. A corner handle resizes one item (the shape stays in proportion; audio has no resize handle). Two fingers rotate, pinch-scale, and slide a selection. Tap an audio clip to play it on the page, or a video to open it in a player.
+- Attach a photo, video, or audio clip from the document picker. The app keeps its own copy, and photos are stored as WebP. **Select** draws a lasso around ink and items, then moves that area. A corner handle resizes the selection — an item or a lassoed area — keeping the shape in proportion (audio has no resize handle). Two fingers rotate, pinch-scale, and slide a selection. Tap an audio clip to play it on the page, or a video to open it in a player.
 - With a selection active, open **⋯** and choose **Save selection**. The image can be PNG, JPEG, or WebP, with a transparent, plain, or ruled background, and it is saved to Gallery in `Pictures/Diary`.
 - Add a Chinese practice card. Each card is a 田字格 with pinyin, Hán-Việt, and a short meaning. You can animate the stroke order, show a hint, and trace the strokes. A finished card (any score above zero) leaves a small badge on that calendar day. The bundled set has twenty characters, starting with 永.
 - Step between days with the arrows, or hold the date and slide sideways to scrub. The header can follow the system date format, or a format you pick.
@@ -55,7 +55,7 @@ The app creates no account and requests no network access. Saving a selection to
 2. Tap a date. The ruled page for that day opens.
 3. Write with the stylus. Switch between **Pen** and **Brush**, and tap the size chip (it shows something like `2.5dp`) to change ink color and thickness.
 4. Use a finger to scroll down the page. The sheet is about two screens tall.
-5. Add a sticker, a photo, a video, an audio clip, or a character card from the toolbar. **Select** lassos ink and items. Two fingers rotate and scale the selection. A corner handle resizes one item, except audio.
+5. Add a sticker, a photo, a video, an audio clip, or a character card from the toolbar. **Select** lassos ink and items. Two fingers rotate and scale the selection. A corner handle resizes the selection (an item or a lassoed area), except audio.
 6. Use the arrows beside the date, or hold the date and slide, to visit another day. Writing saves as you go.
 7. Tap **Calendar** to return to the month. Long-press a date to add, replace, or remove its pin.
 8. Open **Settings** from the calendar or from a day to change theme, toolbar labels, and date format.

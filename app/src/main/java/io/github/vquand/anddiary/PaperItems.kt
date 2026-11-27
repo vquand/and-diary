@@ -340,7 +340,7 @@ internal class PaperItemsStore(private val context: Context, val date: LocalDate
     fun hasBitmapEntry(item: PaperItem): Boolean {
         if (item.kind == PaperItemKind.AUDIO || item.kind == PaperItemKind.HANZI) return true
         if (item.kind == PaperItemKind.STICKER) {
-            return synchronized(stickerBitmaps) { stickerBitmaps.containsKey(item.ref) }
+            return stickerBitmaps.get(item.ref) != null || synchronized(failedStickers) { item.ref in failedStickers }
         }
         val key = "${item.kind.wire}:${item.ref}"
         return mediaBitmaps.get(key) != null || synchronized(failedMedia) { key in failedMedia }
@@ -367,7 +367,7 @@ internal class PaperItemsStore(private val context: Context, val date: LocalDate
     }
 
     fun cachedStickerBitmap(stickerId: String): Bitmap? =
-        synchronized(stickerBitmaps) { stickerBitmaps[stickerId] }
+        stickerBitmaps.get(stickerId)
 
     fun loadStickerBitmapAsync(stickerId: String, onLoaded: (Bitmap?) -> Unit) {
         stickerExecutor.execute {
@@ -378,22 +378,24 @@ internal class PaperItemsStore(private val context: Context, val date: LocalDate
 
     /** Blocking; call off the UI thread. A sheet is decoded once, sliced into every cell, then released. */
     fun loadStickerBitmap(stickerId: String): Bitmap? {
-        synchronized(stickerBitmaps) {
-            if (stickerBitmaps.containsKey(stickerId)) return stickerBitmaps[stickerId]
-        }
+        stickerBitmaps.get(stickerId)?.let { return it }
+        if (synchronized(failedStickers) { stickerId in failedStickers }) return null
         val sheet = catalog.specFor(stickerId)?.sheet
         if (sheet != null) {
             synchronized(sheetLock) {
-                val alreadyLoaded = synchronized(stickerBitmaps) { stickerBitmaps.containsKey(stickerId) }
-                if (!alreadyLoaded) sliceStickerSheet(sheet)
+                if (stickerBitmaps.get(stickerId) == null && synchronized(failedStickers) { stickerId !in failedStickers }) {
+                    sliceStickerSheet(sheet)
+                }
             }
             return cachedStickerBitmap(stickerId)
         }
         val decoded = runCatching {
             context.assets.open("stickers/${catalog.fileFor(stickerId)}").use(BitmapFactory::decodeStream)
         }.getOrNull()
-        synchronized(stickerBitmaps) {
-            stickerBitmaps[stickerId] = decoded
+        if (decoded != null) {
+            stickerBitmaps.put(stickerId, decoded)
+        } else {
+            synchronized(failedStickers) { failedStickers.add(stickerId) }
         }
         return decoded
     }
@@ -402,13 +404,16 @@ internal class PaperItemsStore(private val context: Context, val date: LocalDate
         val sheetBmp = runCatching {
             context.assets.open("stickers/$sheet").use(BitmapFactory::decodeStream)
         }.getOrNull()
-        val cells = catalog.stickers.filter { it.sheet == sheet }.associate { spec ->
-            spec.id to sheetBmp?.let { cropStickerCell(it, spec) }
+        val specs = catalog.stickers.filter { it.sheet == sheet }
+        for (spec in specs) {
+            val cell = sheetBmp?.let { cropStickerCell(it, spec) }
+            if (cell != null) {
+                stickerBitmaps.put(spec.id, cell)
+            } else {
+                synchronized(failedStickers) { failedStickers.add(spec.id) }
+            }
         }
-        synchronized(stickerBitmaps) {
-            stickerBitmaps.putAll(cells)
-        }
-        if (sheetBmp != null && cells.values.none { it === sheetBmp }) sheetBmp.recycle()
+        if (sheetBmp != null && specs.none { stickerBitmaps.get(it.id) === sheetBmp }) sheetBmp.recycle()
     }
 
     private fun cropStickerCell(sheetBmp: Bitmap, spec: StickerSpec): Bitmap? {
@@ -511,7 +516,11 @@ internal class PaperItemsStore(private val context: Context, val date: LocalDate
     companion object {
         private var cachedCatalog: StickerCatalog? = null
         private var cachedHanzi: HanziCatalog? = null
-        private val stickerBitmaps = mutableMapOf<String, Bitmap?>()
+        private val stickerBitmaps = object : LruCache<String, Bitmap>(stickerCacheBytes()) {
+            override fun sizeOf(key: String, value: Bitmap): Int = value.byteCount
+        }
+        // Tracks ids whose decode failed (null result). LruCache cannot store null values.
+        private val failedStickers = mutableSetOf<String>()
         private val sheetLock = Any()
         private val stickerExecutor = Executors.newSingleThreadExecutor { runnable ->
             Thread(runnable, "DiaryStickerIO").apply { isDaemon = true }
@@ -520,6 +529,9 @@ internal class PaperItemsStore(private val context: Context, val date: LocalDate
 
         private fun mediaCacheBytes(): Int =
             (Runtime.getRuntime().maxMemory() / 8).coerceIn(16L shl 20, 128L shl 20).toInt()
+
+        private fun stickerCacheBytes(): Int =
+            (Runtime.getRuntime().maxMemory() / 12).coerceIn(8L shl 20, 64L shl 20).toInt()
 
         /** Rotation in degrees (clockwise) applied first, then an optional horizontal flip; null when upright. */
         fun exifTransform(orientation: Int): Pair<Float, Boolean>? = when (orientation) {

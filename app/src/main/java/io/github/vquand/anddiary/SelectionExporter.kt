@@ -365,7 +365,7 @@ internal object SelectionExporter {
                     strokeWidth = 1f
                 }
                 val spacing = 32f * density
-                val firstLine = ceil((crop.top / spacing).toDouble()).toInt()
+                val firstLine = max(1, ceil((crop.top / spacing).toDouble()).toInt())
                 val lastLine = floor((crop.bottom / spacing).toDouble()).toInt()
                 for (k in firstLine..lastLine) {
                     val y = k * spacing
