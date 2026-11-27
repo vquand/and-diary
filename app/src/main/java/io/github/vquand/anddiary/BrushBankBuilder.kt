@@ -1,10 +1,13 @@
 package io.github.vquand.anddiary
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Matrix
+import android.graphics.Paint
+import android.view.View
 import androidx.ink.brush.Brush
 import androidx.ink.brush.BrushBehavior
 import androidx.ink.brush.BrushCoat
@@ -113,7 +116,7 @@ internal object BrushBankBuilder {
                     )
                     val fallback = BrushPaint(
                         colorFunctions = colorFunctions,
-                        selfOverlap = SelfOverlap.ANY,
+                        selfOverlap = SelfOverlap.DISCARD,
                     )
                     listOf(primary, fallback)
                 }
@@ -136,8 +139,8 @@ internal object BrushBankBuilder {
         is BrushBehaviorSpec.SizeResponse -> BrushBehavior(
             TargetNode(
                 target = TargetNode.Target.SIZE_MULTIPLIER,
-                targetModifierRangeStart = spec.minMultiplier,
-                targetModifierRangeEnd = spec.maxMultiplier,
+                targetModifierRangeStart = spec.startMultiplier,
+                targetModifierRangeEnd = spec.endMultiplier,
                 input = SourceNode(mapSource(spec.source), spec.sourceStart, spec.sourceEnd, OutOfRange.CLAMP),
             ),
         )
@@ -145,8 +148,8 @@ internal object BrushBankBuilder {
         is BrushBehaviorSpec.OpacityResponse -> BrushBehavior(
             TargetNode(
                 target = TargetNode.Target.OPACITY_MULTIPLIER,
-                targetModifierRangeStart = spec.minMultiplier,
-                targetModifierRangeEnd = spec.maxMultiplier,
+                targetModifierRangeStart = spec.startMultiplier,
+                targetModifierRangeEnd = spec.endMultiplier,
                 input = SourceNode(mapSource(spec.source), spec.sourceStart, spec.sourceEnd, OutOfRange.CLAMP),
             ),
         )
@@ -174,14 +177,20 @@ internal object BrushBankBuilder {
     }
 }
 
-internal class AssetAndProceduralTextureStore(context: Context) : TextureBitmapStore {
+internal class AssetAndProceduralTextureStore private constructor(
+    context: Context,
+) : TextureBitmapStore {
     private val appContext = context.applicationContext
     private val cache = ConcurrentHashMap<String, Bitmap>()
 
     override operator fun get(clientTextureId: String): Bitmap? {
         cache[clientTextureId]?.let { return it }
-        val loaded = loadFromAsset(clientTextureId) ?: generateProcedural(clientTextureId) ?: return null
-        return cache.putIfAbsent(clientTextureId, loaded) ?: loaded
+        return synchronized(cache) {
+            cache[clientTextureId]
+                ?: (loadFromAsset(clientTextureId) ?: generateProcedural(clientTextureId))?.also { loaded ->
+                    cache[clientTextureId] = loaded
+                }
+        }
     }
 
     private fun loadFromAsset(textureId: String): Bitmap? {
@@ -197,10 +206,19 @@ internal class AssetAndProceduralTextureStore(context: Context) : TextureBitmapS
 
         val w = decoded.width
         val h = decoded.height
-        if (w <= 0 || h <= 0) return null
+        if (w <= 0 || h <= 0) {
+            decoded.recycle()
+            return null
+        }
+        if (decoded.hasAlpha() && decoded.config == Bitmap.Config.ARGB_8888) {
+            return decoded
+        }
         val pixels = IntArray(w * h)
-        decoded.getPixels(pixels, 0, w, 0, 0, w, h)
-        decoded.recycle()
+        try {
+            decoded.getPixels(pixels, 0, w, 0, 0, w, h)
+        } finally {
+            decoded.recycle()
+        }
         val maskArgb = BrushStampGenerator.grayscalePixelsToMaskArgb(pixels)
         return Bitmap.createBitmap(maskArgb, w, h, Bitmap.Config.ARGB_8888)
     }
@@ -219,8 +237,16 @@ internal class AssetAndProceduralTextureStore(context: Context) : TextureBitmapS
         return Bitmap.createBitmap(argb, PROCEDURAL_STAMP_SIZE, PROCEDURAL_STAMP_SIZE, Bitmap.Config.ARGB_8888)
     }
 
-    private companion object {
-        const val PROCEDURAL_STAMP_SIZE = 64
+    companion object {
+        private const val PROCEDURAL_STAMP_SIZE = 64
+
+        @Volatile
+        private var instance: AssetAndProceduralTextureStore? = null
+
+        fun shared(context: Context): AssetAndProceduralTextureStore =
+            instance ?: synchronized(this) {
+                instance ?: AssetAndProceduralTextureStore(context.applicationContext).also { instance = it }
+            }
     }
 }
 
@@ -260,10 +286,106 @@ internal object PreviewStrokeRenderer {
     fun drawPreview(
         canvas: Canvas,
         renderer: CanvasStrokeRenderer,
-        brush: Brush,
-        inputs: StrokeInputBatch,
+        stroke: Stroke,
     ) {
-        val stroke = Stroke(brush, inputs)
         renderer.draw(canvas, stroke, identity)
+    }
+}
+
+@SuppressLint("ViewConstructor") // Constructed programmatically by popovers.
+internal class BrushPreviewView(
+    context: Context,
+    textureStore: TextureBitmapStore,
+) : View(context) {
+    private val density = resources.displayMetrics.density
+    private val strokeRenderer = CanvasStrokeRenderer.create(textureStore)
+    private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
+    private val strokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeCap = Paint.Cap.ROUND
+        strokeJoin = Paint.Join.ROUND
+    }
+
+    private var sampleInputs: StrokeInputBatch? = null
+    private var cachedStroke: Stroke? = null
+
+    private var isEraser = false
+    private var eraserRadiusPx = 0f
+    private var brushFamily: BrushFamily? = null
+    private var brushColor = 0
+    private var brushSizePx = 0f
+    private var brushEpsilon = 0.2f
+
+    fun setStrokePreview(
+        family: BrushFamily,
+        color: Int,
+        sizePx: Float,
+        epsilon: Float = 0.2f,
+    ) {
+        if (!isEraser &&
+            brushFamily == family &&
+            brushColor == color &&
+            brushSizePx == sizePx &&
+            brushEpsilon == epsilon
+        ) {
+            return
+        }
+        isEraser = false
+        brushFamily = family
+        brushColor = color
+        brushSizePx = sizePx
+        brushEpsilon = epsilon
+        cachedStroke = null
+        invalidate()
+    }
+
+    fun setEraserPreview(radiusPx: Float) {
+        if (isEraser && eraserRadiusPx == radiusPx) return
+        isEraser = true
+        eraserRadiusPx = radiusPx
+        cachedStroke = null
+        invalidate()
+    }
+
+    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+        super.onSizeChanged(w, h, oldw, oldh)
+        if (w == oldw && h == oldh && sampleInputs != null) return
+        sampleInputs = if (w > 0 && h > 0) {
+            PreviewStrokeRenderer.buildSampleInputs(w.toFloat(), h.toFloat(), density)
+        } else {
+            null
+        }
+        cachedStroke = null
+    }
+
+    override fun onDraw(canvas: Canvas) {
+        super.onDraw(canvas)
+        val w = width.toFloat()
+        val h = height.toFloat()
+        if (w <= 0f || h <= 0f) return
+
+        // Keep preview pill on light paper so dark inks stay crisp in dark theme.
+        fillPaint.color = DiaryPalette.LIGHT.paper
+        canvas.drawRoundRect(0f, 0f, w, h, 6f * density, 6f * density, fillPaint)
+
+        if (isEraser) {
+            val cy = h / 2f
+            val radius = (eraserRadiusPx * 0.55f).coerceIn(4f * density, cy - 3f * density)
+            val cx = w - radius - 8f * density
+            fillPaint.color = DiaryPalette.LIGHT.eraserFill
+            canvas.drawCircle(cx, cy, radius, fillPaint)
+            strokePaint.color = DiaryPalette.LIGHT.muted
+            strokePaint.strokeWidth = 1.5f * density
+            canvas.drawCircle(cx, cy, radius, strokePaint)
+            return
+        }
+
+        val inputs = sampleInputs ?: return
+        val family = brushFamily ?: return
+        val stroke = cachedStroke ?: Stroke(
+            Brush.createWithColorIntArgb(family, brushColor, brushSizePx, brushEpsilon),
+            inputs,
+        ).also { cachedStroke = it }
+        PreviewStrokeRenderer.drawPreview(canvas, strokeRenderer, stroke)
     }
 }

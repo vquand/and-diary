@@ -158,12 +158,11 @@ def import_assets(source_dir: Path, drawable_dir: Path, assets_dir: Path) -> Non
         if not entry.is_dir():
             continue
         brush_id = entry.name
-        dest_dir = assets_dir / brush_id
-        dest_dir.mkdir(parents=True, exist_ok=True)
-        dest_webp = dest_dir / "stamp.webp"
+        dest_webp = assets_dir / brush_id / "stamp.webp"
         src_webp = entry / "stamp.webp"
         src_png = entry / "stamp.png"
         if src_webp.is_file():
+            dest_webp.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src_webp, dest_webp)
             print(f"Copied {src_webp} -> {dest_webp}")
         elif src_png.is_file():

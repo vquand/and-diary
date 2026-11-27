@@ -11,6 +11,8 @@ internal interface KeyValueStore {
     fun putString(key: String, value: String)
     fun getFloat(key: String): Float?
     fun putFloat(key: String, value: Float)
+    fun getInt(key: String): Int?
+    fun putInt(key: String, value: Int)
 }
 
 internal class BrushBankSelection(
@@ -43,11 +45,26 @@ internal class BrushBankSelection(
         return clamped
     }
 
+    fun colorFor(spec: BrushSpec): Int {
+        val saved = store.getInt(colorKey(spec.id)) ?: spec.defaultColor
+        return saved or ALPHA_MASK
+    }
+
+    fun setColor(spec: BrushSpec, color: Int): Int {
+        val opaque = color or ALPHA_MASK
+        store.putInt(colorKey(spec.id), opaque)
+        return opaque
+    }
+
     companion object {
         const val KEY_BANK_BRUSH_ID = "bank_brush_id"
         const val KEY_BANK_SIZE_PREFIX = "bank_size_dp_"
+        const val KEY_BANK_COLOR_PREFIX = "bank_color_"
+        private const val ALPHA_MASK = 0xff000000.toInt()
 
         fun sizeKey(brushId: String): String = "$KEY_BANK_SIZE_PREFIX$brushId"
+
+        fun colorKey(brushId: String): String = "$KEY_BANK_COLOR_PREFIX$brushId"
     }
 }
 
@@ -73,16 +90,16 @@ internal sealed class BrushBehaviorSpec {
         val source: BrushSourceKind,
         val sourceStart: Float = 0f,
         val sourceEnd: Float,
-        val minMultiplier: Float,
-        val maxMultiplier: Float = 1f,
+        val startMultiplier: Float,
+        val endMultiplier: Float = 1f,
     ) : BrushBehaviorSpec()
 
     data class OpacityResponse(
         val source: BrushSourceKind,
         val sourceStart: Float = 0f,
         val sourceEnd: Float,
-        val minMultiplier: Float,
-        val maxMultiplier: Float = 1f,
+        val startMultiplier: Float,
+        val endMultiplier: Float = 1f,
     ) : BrushBehaviorSpec()
 
     data class LateralJitter(
@@ -131,13 +148,24 @@ internal data class BrushSpec(
 internal object BrushBank {
     const val DEFAULT_ID = "pencil"
 
+    val INK_SWATCHES = intArrayOf(
+        0xff272320.toInt(), // Sumi charcoal
+        0xff283948.toInt(), // Slate blue
+        0xff984631.toInt(), // Vermilion
+        0xff245850.toInt(), // Pine green
+        0xff36496e.toInt(), // Indigo
+        0xff986315.toInt(), // Ochre
+        0xff765499.toInt(), // Plum
+        0xff6e4b3a.toInt(), // Warm sepia
+    )
+
     val all: List<BrushSpec> = listOf(
         BrushSpec(
             id = "pencil",
             storageCode = 16,
             nameRes = R.string.brush_pencil,
             icon = ToolIconKind.PENCIL,
-            defaultColor = 0xff4a4743.toInt(),
+            defaultColor = 0xff272320.toInt(),
             defaultSizeDp = 2.5f,
             minSizeDp = 1f,
             maxSizeDp = 8f,
@@ -147,32 +175,32 @@ internal object BrushBank {
                 BrushBehaviorSpec.SizeResponse(
                     source = BrushSourceKind.NORMALIZED_PRESSURE,
                     sourceEnd = 1f,
-                    minMultiplier = 0.35f,
-                    maxMultiplier = 1f,
+                    startMultiplier = 0.35f,
+                    endMultiplier = 1f,
                 ),
                 BrushBehaviorSpec.OpacityResponse(
                     source = BrushSourceKind.NORMALIZED_PRESSURE,
                     sourceEnd = 1f,
-                    minMultiplier = 0.45f,
-                    maxMultiplier = 0.95f,
+                    startMultiplier = 0.45f,
+                    endMultiplier = 0.95f,
                 ),
                 BrushBehaviorSpec.OpacityResponse(
                     source = BrushSourceKind.SPEED,
                     sourceEnd = 45f,
-                    minMultiplier = 1f,
-                    maxMultiplier = 0.90f,
+                    startMultiplier = 1f,
+                    endMultiplier = 0.90f,
                 ),
                 BrushBehaviorSpec.SizeResponse(
                     source = BrushSourceKind.DISTANCE_TRAVELED,
                     sourceEnd = 0.5f,
-                    minMultiplier = 0.50f,
-                    maxMultiplier = 1f,
+                    startMultiplier = 0.50f,
+                    endMultiplier = 1f,
                 ),
                 BrushBehaviorSpec.SizeResponse(
                     source = BrushSourceKind.DISTANCE_REMAINING,
                     sourceEnd = 1f,
-                    minMultiplier = 0.55f,
-                    maxMultiplier = 1f,
+                    startMultiplier = 0.55f,
+                    endMultiplier = 1f,
                 ),
                 BrushBehaviorSpec.LateralJitter(
                     seed = 16,
@@ -199,32 +227,32 @@ internal object BrushBank {
                 BrushBehaviorSpec.SizeResponse(
                     source = BrushSourceKind.NORMALIZED_PRESSURE,
                     sourceEnd = 1f,
-                    minMultiplier = 0.12f,
-                    maxMultiplier = 1f,
+                    startMultiplier = 0.12f,
+                    endMultiplier = 1f,
                 ),
                 BrushBehaviorSpec.OpacityResponse(
                     source = BrushSourceKind.NORMALIZED_PRESSURE,
                     sourceEnd = 1f,
-                    minMultiplier = 0.85f,
-                    maxMultiplier = 1f,
+                    startMultiplier = 0.85f,
+                    endMultiplier = 1f,
                 ),
                 BrushBehaviorSpec.SizeResponse(
                     source = BrushSourceKind.SPEED,
                     sourceEnd = 45f,
-                    minMultiplier = 1f,
-                    maxMultiplier = 0.60f,
+                    startMultiplier = 1f,
+                    endMultiplier = 0.60f,
                 ),
                 BrushBehaviorSpec.SizeResponse(
                     source = BrushSourceKind.DISTANCE_TRAVELED,
                     sourceEnd = 1f,
-                    minMultiplier = 0.55f,
-                    maxMultiplier = 1f,
+                    startMultiplier = 0.55f,
+                    endMultiplier = 1f,
                 ),
                 BrushBehaviorSpec.SizeResponse(
                     source = BrushSourceKind.DISTANCE_REMAINING,
                     sourceEnd = 3f,
-                    minMultiplier = 0.08f,
-                    maxMultiplier = 1f,
+                    startMultiplier = 0.08f,
+                    endMultiplier = 1f,
                 ),
             ),
             textureId = "chinese-ink-brush",
@@ -251,26 +279,26 @@ internal object BrushBank {
                 BrushBehaviorSpec.SizeResponse(
                     source = BrushSourceKind.NORMALIZED_PRESSURE,
                     sourceEnd = 1f,
-                    minMultiplier = 0.88f,
-                    maxMultiplier = 1f,
+                    startMultiplier = 0.88f,
+                    endMultiplier = 1f,
                 ),
                 BrushBehaviorSpec.OpacityResponse(
                     source = BrushSourceKind.NORMALIZED_PRESSURE,
                     sourceEnd = 1f,
-                    minMultiplier = 0.90f,
-                    maxMultiplier = 1f,
+                    startMultiplier = 0.90f,
+                    endMultiplier = 1f,
                 ),
                 BrushBehaviorSpec.SizeResponse(
                     source = BrushSourceKind.DISTANCE_TRAVELED,
                     sourceEnd = 1f,
-                    minMultiplier = 0.55f,
-                    maxMultiplier = 1f,
+                    startMultiplier = 0.55f,
+                    endMultiplier = 1f,
                 ),
                 BrushBehaviorSpec.SizeResponse(
                     source = BrushSourceKind.DISTANCE_REMAINING,
                     sourceEnd = 1f,
-                    minMultiplier = 0.55f,
-                    maxMultiplier = 1f,
+                    startMultiplier = 0.55f,
+                    endMultiplier = 1f,
                 ),
             ),
         ),
@@ -292,20 +320,20 @@ internal object BrushBank {
                 BrushBehaviorSpec.SizeResponse(
                     source = BrushSourceKind.NORMALIZED_PRESSURE,
                     sourceEnd = 1f,
-                    minMultiplier = 0.55f,
-                    maxMultiplier = 1.25f,
+                    startMultiplier = 0.55f,
+                    endMultiplier = 1.25f,
                 ),
                 BrushBehaviorSpec.OpacityResponse(
                     source = BrushSourceKind.NORMALIZED_PRESSURE,
                     sourceEnd = 1f,
-                    minMultiplier = 0.40f,
-                    maxMultiplier = 1f,
+                    startMultiplier = 0.40f,
+                    endMultiplier = 1f,
                 ),
                 BrushBehaviorSpec.OpacityResponse(
                     source = BrushSourceKind.SPEED,
                     sourceEnd = 45f,
-                    minMultiplier = 1f,
-                    maxMultiplier = 0.55f,
+                    startMultiplier = 1f,
+                    endMultiplier = 0.55f,
                 ),
                 BrushBehaviorSpec.LateralJitter(
                     seed = 19,
@@ -333,20 +361,20 @@ internal object BrushBank {
                 BrushBehaviorSpec.SizeResponse(
                     source = BrushSourceKind.NORMALIZED_PRESSURE,
                     sourceEnd = 1f,
-                    minMultiplier = 0.70f,
-                    maxMultiplier = 1.20f,
+                    startMultiplier = 0.70f,
+                    endMultiplier = 1.20f,
                 ),
                 BrushBehaviorSpec.OpacityResponse(
                     source = BrushSourceKind.NORMALIZED_PRESSURE,
                     sourceEnd = 1f,
-                    minMultiplier = 0.40f,
-                    maxMultiplier = 1f,
+                    startMultiplier = 0.40f,
+                    endMultiplier = 1f,
                 ),
                 BrushBehaviorSpec.SizeResponse(
                     source = BrushSourceKind.DISTANCE_TRAVELED,
                     sourceEnd = 0.8f,
-                    minMultiplier = 0.50f,
-                    maxMultiplier = 1f,
+                    startMultiplier = 0.50f,
+                    endMultiplier = 1f,
                 ),
                 BrushBehaviorSpec.LateralJitter(
                     seed = 20,

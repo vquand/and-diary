@@ -174,28 +174,50 @@ class DiaryCoreTests {
         for (spec in BrushBank.all) {
             assertEquals(spec, BrushBank.byId(spec.id))
             assertEquals(spec, BrushBank.byStorageCode(spec.storageCode))
-            assertTrue(spec.minSizeDp > 0f && spec.defaultSizeDp in spec.minSizeDp..spec.maxSizeDp)
+            assertTrue("Storage code out of 16..255 for ${spec.id}", spec.storageCode in 16..255)
+            assertTrue("minSizeDp/defaultSizeDp invalid for ${spec.id}", spec.minSizeDp > 0f && spec.defaultSizeDp in spec.minSizeDp..spec.maxSizeDp)
+            assertTrue("presetsDp empty for ${spec.id}", spec.presetsDp.isNotEmpty())
+            for (preset in spec.presetsDp) {
+                assertTrue("Preset $preset out of range for ${spec.id}", preset in spec.minSizeDp..spec.maxSizeDp)
+            }
+            assertTrue(
+                "defaultColor for ${spec.id} must be in INK_SWATCHES",
+                spec.defaultColor in BrushBank.INK_SWATCHES,
+            )
         }
         assertNull(BrushBank.byId("nonexistent-brush"))
         assertNull(BrushBank.byStorageCode(99))
         assertEquals("pencil", BrushBank.defaultSpec.id)
     }
 
+    private class FakeKeyValueStore : KeyValueStore {
+        val strings = mutableMapOf<String, String>()
+        val floats = mutableMapOf<String, Float>()
+        val ints = mutableMapOf<String, Int>()
+        val writes = mutableListOf<String>()
+
+        override fun getString(key: String): String? = strings[key]
+        override fun putString(key: String, value: String) {
+            writes.add(key)
+            strings[key] = value
+        }
+
+        override fun getFloat(key: String): Float? = floats[key]
+        override fun putFloat(key: String, value: Float) {
+            writes.add(key)
+            floats[key] = value
+        }
+
+        override fun getInt(key: String): Int? = ints[key]
+        override fun putInt(key: String, value: Int) {
+            writes.add(key)
+            ints[key] = value
+        }
+    }
+
     @Test
     fun brushBankSelectionPersistsAndFallsBackToPencil() {
-        val backingStrings = mutableMapOf<String, String>()
-        val backingFloats = mutableMapOf<String, Float>()
-        val store = object : KeyValueStore {
-            override fun getString(key: String): String? = backingStrings[key]
-            override fun putString(key: String, value: String) {
-                backingStrings[key] = value
-            }
-
-            override fun getFloat(key: String): Float? = backingFloats[key]
-            override fun putFloat(key: String, value: Float) {
-                backingFloats[key] = value
-            }
-        }
+        val store = FakeKeyValueStore()
 
         val first = BrushBankSelection(store)
         assertEquals("pencil", first.selectedId)
@@ -218,6 +240,61 @@ class DiaryCoreTests {
         store.putString(BrushBankSelection.KEY_BANK_BRUSH_ID, "removed-legacy-brush")
         assertEquals("pencil", reloaded.selectedId)
         assertEquals(16, reloaded.selectedSpec.storageCode)
+    }
+
+    @Test
+    fun brushBankSelectionClampsSizeOnWriteAndRead() {
+        val store = FakeKeyValueStore()
+        val selection = BrushBankSelection(store)
+        val pencil = BrushBank.byId("pencil")!!
+
+        assertEquals(pencil.minSizeDp, selection.setSize(pencil, 0.1f), 0.001f)
+        assertEquals(pencil.minSizeDp, selection.sizeFor(pencil), 0.001f)
+
+        assertEquals(pencil.maxSizeDp, selection.setSize(pencil, 99f), 0.001f)
+        assertEquals(pencil.maxSizeDp, selection.sizeFor(pencil), 0.001f)
+
+        store.floats[BrushBankSelection.sizeKey(pencil.id)] = -5f
+        assertEquals(pencil.minSizeDp, selection.sizeFor(pencil), 0.001f)
+
+        store.floats[BrushBankSelection.sizeKey(pencil.id)] = 250f
+        assertEquals(pencil.maxSizeDp, selection.sizeFor(pencil), 0.001f)
+    }
+
+    @Test
+    fun brushBankSelectionPersistsPerBrushColorWithOpaqueAlphaAndSelectWritesOnlyId() {
+        val store = FakeKeyValueStore()
+        val selection = BrushBankSelection(store)
+        val pencil = BrushBank.byId("pencil")!!
+        val quill = BrushBank.byId("calligraphy-quill")!!
+
+        // Starring only writes bank_brush_id (never size or color keys).
+        store.writes.clear()
+        selection.select(quill.id)
+        selection.select("charcoal")
+        selection.select(pencil.id)
+        assertEquals(
+            listOf(
+                BrushBankSelection.KEY_BANK_BRUSH_ID,
+                BrushBankSelection.KEY_BANK_BRUSH_ID,
+                BrushBankSelection.KEY_BANK_BRUSH_ID,
+            ),
+            store.writes,
+        )
+
+        // Per-brush color persistence + forced opaque alpha.
+        val writtenColor = selection.setColor(pencil, 0x35984631)
+        assertEquals(0xff984631.toInt(), writtenColor)
+
+        val selectedB = selection.select(quill.id)
+        assertEquals(quill.defaultColor, selection.colorFor(selectedB))
+
+        val selectedA = selection.select(pencil.id)
+        assertEquals(0xff984631.toInt(), selection.colorFor(selectedA))
+
+        val reloaded = BrushBankSelection(store)
+        assertEquals(0xff984631.toInt(), reloaded.colorFor(pencil))
+        assertEquals(quill.defaultColor, reloaded.colorFor(quill))
     }
 
     @Test

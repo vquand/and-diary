@@ -38,3 +38,8 @@ Codes `0` and `1` are built-in toolbar tools; codes `16+` are brush bank entries
 | `18` | `calligraphy-quill` | Fixed 40° broad chisel nib |
 | `19` | `airbrush` | Wide low-opacity soft spray |
 | `20` | `charcoal` | Coarse grainy charcoal stick with jitter |
+
+## Compatibility
+
+- **Forward compatibility**: Builds from before the brush bank reject `.ink` files that contain brush codes `16`–`20` (`IOException("Unknown diary brush")`).
+- **Backward compatibility**: Old `.ink` files (using codes `0` and `1`) continue to load normally in new builds.

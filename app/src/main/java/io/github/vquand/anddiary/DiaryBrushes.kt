@@ -35,13 +35,20 @@ private class SharedPreferencesKeyValueStore(
     override fun putFloat(key: String, value: Float) {
         prefs.edit().putFloat(key, value).apply()
     }
+
+    override fun getInt(key: String): Int? =
+        if (prefs.contains(key)) prefs.getInt(key, 0) else null
+
+    override fun putInt(key: String, value: Int) {
+        prefs.edit().putInt(key, value).apply()
+    }
 }
 
 internal class DiaryBrushes(context: Context, private val density: Float) {
     private val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     private val bankSelection = BrushBankSelection(SharedPreferencesKeyValueStore(prefs))
 
-    val textureStore = AssetAndProceduralTextureStore(context)
+    val textureStore = AssetAndProceduralTextureStore.shared(context)
 
     val penFamily: BrushFamily = StockBrushes.pressurePen()
 
@@ -77,14 +84,11 @@ internal class DiaryBrushes(context: Context, private val density: Float) {
             prefs.edit().putInt(KEY_BRUSH_COLOR, field).apply()
         }
 
-    var bankColor: Int = if (prefs.contains(KEY_BANK_COLOR)) {
-        prefs.getInt(KEY_BANK_COLOR, bankBrush.defaultColor)
-    } else {
-        bankBrush.defaultColor
-    }
+    private var _bankColor: Int = bankSelection.colorFor(bankBrush)
+    var bankColor: Int
+        get() = _bankColor
         set(value) {
-            field = value or ALPHA_MASK
-            prefs.edit().putInt(KEY_BANK_COLOR, field).apply()
+            _bankColor = bankSelection.setColor(bankBrush, value)
         }
 
     var penSizeDp: Float = prefs.getFloat(KEY_PEN_SIZE, DEFAULT_PEN_SIZE_DP).coerceIn(PEN_MIN_DP, PEN_MAX_DP)
@@ -99,9 +103,11 @@ internal class DiaryBrushes(context: Context, private val density: Float) {
             prefs.edit().putFloat(KEY_BRUSH_SIZE, field).apply()
         }
 
-    var bankSizeDp: Float = bankSelection.sizeFor(bankBrush)
+    private var _bankSizeDp: Float = bankSelection.sizeFor(bankBrush)
+    var bankSizeDp: Float
+        get() = _bankSizeDp
         set(value) {
-            field = bankSelection.setSize(bankBrush, value)
+            _bankSizeDp = bankSelection.setSize(bankBrush, value)
         }
 
     var eraserSizeDp: Float = prefs.getFloat(KEY_ERASER_SIZE, DEFAULT_ERASER_SIZE_DP).coerceIn(ERASER_MIN_DP, ERASER_MAX_DP)
@@ -126,20 +132,28 @@ internal class DiaryBrushes(context: Context, private val density: Float) {
         val next = bankSelection.select(id)
         if (next.id != bankBrush.id) {
             bankBrush = next
-            bankSizeDp = bankSelection.sizeFor(next)
+            _bankSizeDp = bankSelection.sizeFor(next)
+            _bankColor = bankSelection.colorFor(next)
         }
     }
+
+    fun bankColorFor(spec: BrushSpec): Int = bankSelection.colorFor(spec)
+
+    fun bankSizeDpFor(spec: BrushSpec): Float = bankSelection.sizeFor(spec)
 
     fun familyFor(spec: BrushSpec): BrushFamily =
         bankFamilyById[spec.id] ?: bankFamilyById.getValue(BrushBank.DEFAULT_ID)
 
-    fun previewBrushFor(spec: BrushSpec, sizeDp: Float = spec.defaultSizeDp, color: Int = bankColor): Brush =
-        Brush.createWithColorIntArgb(familyFor(spec), color, sizeDp * density, EPSILON)
+    fun previewBrushFor(
+        spec: BrushSpec,
+        sizeDp: Float = bankSizeDpFor(spec),
+        color: Int = bankColorFor(spec),
+    ): Brush = Brush.createWithColorIntArgb(familyFor(spec), color, sizeDp * density, EPSILON)
 
     fun storageCodeFor(family: BrushFamily): Int = when (family) {
         penFamily -> InkEntry.PEN
         softBrushFamily -> InkEntry.SOFT_BRUSH
-        else -> bankStorageCodeByFamily[family] ?: InkEntry.PEN
+        else -> bankStorageCodeByFamily[family] ?: error("Unknown diary brush family")
     }
 
     fun brushFor(tool: DiaryTool): Brush = when (tool) {
@@ -210,7 +224,6 @@ internal class DiaryBrushes(context: Context, private val density: Float) {
         private const val PREFS_NAME = "diary_toolbox"
         private const val KEY_PEN_COLOR = "pen_color"
         private const val KEY_BRUSH_COLOR = "brush_color"
-        private const val KEY_BANK_COLOR = "bank_color"
         private const val KEY_PEN_SIZE = "pen_size_dp"
         private const val KEY_BRUSH_SIZE = "brush_size_dp"
         private const val KEY_ERASER_SIZE = "eraser_size_dp"
@@ -236,15 +249,6 @@ internal class DiaryBrushes(context: Context, private val density: Float) {
         val BRUSH_PRESETS_DP = floatArrayOf(7f, 12f, 20f)
         val ERASER_PRESETS_DP = floatArrayOf(8f, 14f, 24f)
 
-        val INK_SWATCHES = intArrayOf(
-            0xff272320.toInt(), // Sumi charcoal
-            0xff283948.toInt(), // Slate blue
-            0xff984631.toInt(), // Vermilion
-            0xff245850.toInt(), // Pine green
-            0xff36496e.toInt(), // Indigo
-            0xff986315.toInt(), // Ochre
-            0xff765499.toInt(), // Plum
-            0xff6e4b3a.toInt(), // Warm sepia
-        )
+        val INK_SWATCHES: IntArray = BrushBank.INK_SWATCHES
     }
 }

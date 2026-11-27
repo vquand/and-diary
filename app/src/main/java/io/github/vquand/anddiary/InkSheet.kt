@@ -394,7 +394,7 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
             onClose = { brushBankDialog?.dismiss() },
         )
         brushBankDialog = Dialog(context).apply {
-            setContentView(picker, ViewGroup.LayoutParams(dp(356), ViewGroup.LayoutParams.WRAP_CONTENT))
+            setContentView(picker, ViewGroup.LayoutParams(picker.preferredDialogWidthPx(), ViewGroup.LayoutParams.WRAP_CONTENT))
             window?.setBackgroundDrawableResource(android.R.color.transparent)
             setCanceledOnTouchOutside(true)
             setOnDismissListener {

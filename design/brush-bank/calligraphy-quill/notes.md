@@ -10,7 +10,7 @@ Files: `icon.svg` (24x24, single colour #000000, strokes 2.04 = 0.085 x 24 like 
 - **Taper:** none; flat chisel ends. Start/end width ramp 0.55x -> 1x over ~1 nib length only to avoid a hard dot.
 - **Spacing:** 0.035 x nib length (stamp mode) / continuous mesh with elliptical tip (ink mode).
 - **Jitter:** none (crisp). **Grain:** none; edges clean and hard (1 px AA).
-- **Tip:** `stamp.png` is a 256x256 rounded-rectangle chisel nib, major:minor ~ 7:1, rotated 40 deg CCW from horizontal, fixed in screen space (do NOT rotate with stroke direction). In androidx.ink the same shape can be made without the PNG: `BrushTip(scaleX=1f, scaleY=0.14f, cornerRounding=0.2f, rotation=40deg)`.
+- **Tip:** `stamp.png` is a 256x256 rounded-rectangle chisel nib, major:minor ~ 7:1, rotated 40 deg CCW from horizontal, fixed in screen space (do NOT rotate with stroke direction). In androidx.ink the same shape is made directly without a texture (`BrushTip(scaleX=1f, scaleY=0.14f, cornerRounding=0.2f, rotationDegrees=40f)`), so no `stamp.webp` is shipped in `assets/brushes/`.
 - **Blend:** source-over, opaque.
 
 ## Config dialog (same ToolboxPopover as Pen/Brush)

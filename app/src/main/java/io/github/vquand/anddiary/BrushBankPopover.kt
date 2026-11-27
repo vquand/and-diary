@@ -3,18 +3,13 @@ package io.github.vquand.anddiary
 import android.annotation.SuppressLint
 import android.content.Context
 import android.content.res.ColorStateList
-import android.graphics.Canvas
-import android.graphics.Paint
 import android.graphics.drawable.GradientDrawable
 import android.util.TypedValue
 import android.view.Gravity
-import android.view.View
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
-import androidx.ink.rendering.android.canvas.CanvasStrokeRenderer
-import androidx.ink.strokes.StrokeInputBatch
 import kotlin.math.roundToInt
 
 @SuppressLint("ViewConstructor") // Constructed programmatically by InkSheet.
@@ -26,7 +21,6 @@ internal class BrushBankPopover(
 ) : LinearLayout(context) {
     private val density = resources.displayMetrics.density
     private val palette = DiarySettings.palette(context)
-    private val strokeRenderer = CanvasStrokeRenderer.create(brushes.textureStore)
     private val rows = mutableListOf<BrushRowViews>()
 
     private data class BrushRowViews(
@@ -35,7 +29,6 @@ internal class BrushBankPopover(
         val icon: ToolIconView,
         val name: TextView,
         val star: ImageView,
-        val preview: BankBrushPreviewView,
     )
 
     init {
@@ -84,9 +77,16 @@ internal class BrushBankPopover(
         val scroll = ScrollView(context).apply {
             addView(listContainer, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT))
         }
-        addView(scroll, LayoutParams(LayoutParams.MATCH_PARENT, dp(340)))
+        val maxScrollHeight = (resources.displayMetrics.heightPixels * 0.65f).roundToInt()
+        val scrollHeight = minOf(dp(340), maxScrollHeight).coerceAtLeast(dp(140))
+        addView(scroll, LayoutParams(LayoutParams.MATCH_PARENT, scrollHeight))
 
         refreshSelection()
+    }
+
+    fun preferredDialogWidthPx(): Int {
+        val maxDialogWidth = (resources.displayMetrics.widthPixels * 0.92f).roundToInt()
+        return minOf(dp(356), maxDialogWidth).coerceAtLeast(dp(240))
     }
 
     private fun buildRow(spec: BrushSpec): BrushRowViews {
@@ -98,7 +98,14 @@ internal class BrushBankPopover(
             setTextColor(palette.text)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
         }
-        val previewView = BankBrushPreviewView(context, spec)
+        val previewSizeDp = brushes.bankSizeDpFor(spec).coerceIn(1.5f, 18f)
+        val previewView = BrushPreviewView(context, brushes.textureStore).apply {
+            setStrokePreview(
+                family = brushes.familyFor(spec),
+                color = brushes.bankColorFor(spec),
+                sizePx = previewSizeDp * density,
+            )
+        }
         val middle = LinearLayout(context).apply {
             orientation = VERTICAL
             addView(nameView, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT))
@@ -130,7 +137,7 @@ internal class BrushBankPopover(
         container.setOnClickListener(pickAction)
         starView.setOnClickListener(pickAction)
 
-        return BrushRowViews(spec, container, iconView, nameView, starView, previewView)
+        return BrushRowViews(spec, container, iconView, nameView, starView)
     }
 
     private fun refreshSelection() {
@@ -148,37 +155,8 @@ internal class BrushBankPopover(
             row.name.paint.isFakeBoldText = selected
             row.star.setImageResource(if (selected) R.drawable.ic_star_on else R.drawable.ic_star_off)
             row.star.imageTintList = ColorStateList.valueOf(if (selected) palette.accent else palette.muted)
-            row.preview.invalidate()
         }
     }
 
     private fun dp(value: Int) = (value * density).roundToInt()
-
-    private inner class BankBrushPreviewView(
-        context: Context,
-        private val spec: BrushSpec,
-    ) : View(context) {
-        private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
-        private var sampleInputs: StrokeInputBatch? = null
-
-        override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
-            super.onSizeChanged(w, h, oldw, oldh)
-            sampleInputs = if (w > 0 && h > 0) {
-                PreviewStrokeRenderer.buildSampleInputs(w.toFloat(), h.toFloat(), density)
-            } else {
-                null
-            }
-        }
-
-        override fun onDraw(canvas: Canvas) {
-            super.onDraw(canvas)
-            // Keep preview pill on light paper so dark inks remain crisp in dark theme.
-            fillPaint.color = DiaryPalette.LIGHT.paper
-            canvas.drawRoundRect(0f, 0f, width.toFloat(), height.toFloat(), 6f * density, 6f * density, fillPaint)
-            val inputs = sampleInputs ?: return
-            val previewSizeDp = spec.defaultSizeDp.coerceIn(1.5f, 18f)
-            val brush = brushes.previewBrushFor(spec, sizeDp = previewSizeDp, color = brushes.bankColor)
-            PreviewStrokeRenderer.drawPreview(canvas, strokeRenderer, brush, inputs)
-        }
-    }
 }
