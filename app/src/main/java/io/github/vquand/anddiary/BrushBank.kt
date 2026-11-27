@@ -399,6 +399,7 @@ internal object BrushBank {
     fun byStorageCode(code: Int): BrushSpec? = specsByCode[code]
 }
 
+// shortcut: kept as an intentional fallback when a newly added brush has no bundled stamp.webp yet.
 internal object BrushStampGenerator {
     fun generateAlphaMask(kind: ProceduralStampKind, size: Int = 64, seed: Long = 0x5EEDL): IntArray {
         require(size > 0) { "Stamp size must be positive" }

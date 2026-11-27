@@ -251,6 +251,7 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
 
         updateToolbar()
         updateHistoryButtons()
+        preloadBrushTexturesAsync()
     }
 
     fun cancelGesture() {
@@ -378,6 +379,15 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
     private fun pruneUnusedMediaAsync(store: PaperItemsStore, activeItems: List<PaperItem>) {
         ioExecutor.execute {
             runCatching { store.pruneUnusedMedia(activeItems) }
+        }
+    }
+
+    private fun preloadBrushTexturesAsync() {
+        val store = brushes.textureStore
+        ioExecutor.execute {
+            for (spec in BrushBank.all) {
+                spec.textureId?.let { id -> runCatching { store[id] } }
+            }
         }
     }
 

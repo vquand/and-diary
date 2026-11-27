@@ -144,12 +144,6 @@ internal class DiaryBrushes(context: Context, private val density: Float) {
     fun familyFor(spec: BrushSpec): BrushFamily =
         bankFamilyById[spec.id] ?: bankFamilyById.getValue(BrushBank.DEFAULT_ID)
 
-    fun previewBrushFor(
-        spec: BrushSpec,
-        sizeDp: Float = bankSizeDpFor(spec),
-        color: Int = bankColorFor(spec),
-    ): Brush = Brush.createWithColorIntArgb(familyFor(spec), color, sizeDp * density, EPSILON)
-
     fun storageCodeFor(family: BrushFamily): Int = when (family) {
         penFamily -> InkEntry.PEN
         softBrushFamily -> InkEntry.SOFT_BRUSH
