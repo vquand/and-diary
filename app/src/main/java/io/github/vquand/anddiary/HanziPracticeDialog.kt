@@ -192,7 +192,6 @@ private class HanziPracticeCanvas(
 
     private var matchedCount = 0
     private val strokeScores = mutableListOf<Int>()
-    private val userStrokePaths = mutableListOf<List<Pair<Float, Float>>>()
     private val activePoints = mutableListOf<Pair<Float, Float>>()
 
     private val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -266,7 +265,6 @@ private class HanziPracticeCanvas(
         stopAnimations()
         matchedCount = 0
         strokeScores.clear()
-        userStrokePaths.clear()
         activePoints.clear()
         onStatus("Write stroke 1 of ${word.strokes.size}", false)
         invalidate()
@@ -450,7 +448,6 @@ private class HanziPracticeCanvas(
         val score = HanziStrokeMatcher.matchScore(userRaw, expected)
         if (score != null) {
             hintStrokeIndex = -1
-            userStrokePaths.add(userRaw)
             strokeScores.add(score)
             matchedCount++
             if (matchedCount >= word.strokes.size && word.strokes.isNotEmpty()) {

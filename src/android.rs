@@ -139,7 +139,9 @@ impl Diary {
             SettingsAction::SetToolbar(toolbar) => self.settings.toolbar = toolbar,
             SettingsAction::SetDateFormat(date_format) => self.settings.date_format = date_format,
         }
-        let _ = settings::save(&self.settings_path, self.settings);
+        if let Err(error) = settings::save(&self.settings_path, self.settings) {
+            eprintln!("could not save settings: {error}");
+        }
         apply_android_settings(self.settings);
         cx.notify();
     }

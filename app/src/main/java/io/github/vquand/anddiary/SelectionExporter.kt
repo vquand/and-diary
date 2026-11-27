@@ -25,6 +25,7 @@ import androidx.ink.rendering.android.canvas.CanvasStrokeRenderer
 import androidx.ink.strokes.Stroke
 import java.io.File
 import java.io.IOException
+import java.io.OutputStream
 import java.time.LocalDate
 import java.util.UUID
 import kotlin.math.ceil
@@ -385,14 +386,13 @@ internal object SelectionExporter {
                 }
             }
 
-            saveBitmapToGallery(context, bitmap, request)
-            return request.fileName
+            return saveBitmapToGallery(context, bitmap, request)
         } finally {
             bitmap.recycle()
         }
     }
 
-    private fun saveBitmapToGallery(context: Context, bitmap: Bitmap, request: ExportRequest) {
+    private fun saveBitmapToGallery(context: Context, bitmap: Bitmap, request: ExportRequest): String {
         val compressFormat = when (request.format) {
             ExportFormat.PNG -> Bitmap.CompressFormat.PNG
             ExportFormat.JPEG -> Bitmap.CompressFormat.JPEG
@@ -423,6 +423,9 @@ internal object SelectionExporter {
                 resolver.delete(uri, null, null)
                 throw error
             }
+            return resolver.query(uri, arrayOf(MediaStore.Images.Media.DISPLAY_NAME), null, null, null)
+                ?.use { cursor -> if (cursor.moveToFirst()) cursor.getString(0) else null }
+                ?: request.fileName
         } else {
             @Suppress("DEPRECATION")
             val picturesDir = File(
@@ -432,11 +435,8 @@ internal object SelectionExporter {
             if (!picturesDir.exists() && !picturesDir.mkdirs()) {
                 throw IOException("Could not create Gallery Pictures/Diary directory")
             }
-            val file = uniqueFile(picturesDir, request.fileName)
-            file.outputStream().use { out ->
-                if (!bitmap.compress(compressFormat, quality, out)) {
-                    throw IOException("Bitmap compression failed")
-                }
+            val file = writeUniqueFile(picturesDir, request.fileName) { out ->
+                bitmap.compress(compressFormat, quality, out)
             }
             MediaScannerConnection.scanFile(
                 context,
@@ -444,7 +444,22 @@ internal object SelectionExporter {
                 arrayOf(request.format.mimeType),
                 null,
             )
+            return file.name
         }
+    }
+
+    /** Writes via [writer] into a fresh file in [dir]; removes the partial file if the write fails. */
+    fun writeUniqueFile(dir: File, fileName: String, writer: (OutputStream) -> Boolean): File {
+        val file = uniqueFile(dir, fileName)
+        try {
+            file.outputStream().use { out ->
+                if (!writer(out)) throw IOException("Bitmap compression failed")
+            }
+        } catch (error: Exception) {
+            file.delete()
+            throw error
+        }
+        return file
     }
 
     fun uniqueFile(dir: File, fileName: String): File {

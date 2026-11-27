@@ -57,6 +57,8 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
     private var entry = InkEntry(context, date, brushes)
     private var itemsStore = PaperItemsStore(context, date)
     private var isSwitchingDate = false
+    private val clearGenerations = mutableMapOf<LocalDate, Int>()
+    private fun clearGenerationOf(date: LocalDate) = clearGenerations[date] ?: 0
     private val paper = Paper()
     private val mediaPlayback = MediaPlayback(context) { paper.invalidate() }
     private var clearDialog: AlertDialog? = null
@@ -269,6 +271,8 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
 
     fun switchDate(targetDate: LocalDate, animate: Boolean = true, notifyHost: Boolean = true) {
         if (targetDate == currentDate) {
+            paper.animate().cancel()
+            isSwitchingDate = false
             paper.animate().translationX(0f).alpha(1f).setDuration(140L).start()
             return
         }
@@ -345,6 +349,10 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
     }
 
     override fun onDetachedFromWindow() {
+        paper.animate().cancel()
+        paper.translationX = 0f
+        paper.alpha = 1f
+        isSwitchingDate = false
         pruneUnusedMediaAsync(itemsStore, paper.currentItems())
         mediaPlayback.release()
         stickerDialog?.dismiss()
@@ -395,8 +403,8 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
     }
 
     private fun exportSelectionAsync(snapshot: SelectionExportSnapshot, request: ExportRequest) {
+        val targetStore = itemsStore
         val runExport = {
-            val targetStore = itemsStore
             ioExecutor.execute {
                 try {
                     val savedName = SelectionExporter.exportToGallery(
@@ -476,7 +484,7 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
     private fun importMediaAsync(uri: Uri, kind: PaperItemKind) {
         val targetDate = currentDate
         val targetStore = itemsStore
-        val startGen = paper.clearGeneration
+        val startGen = clearGenerationOf(targetDate)
         val centerX = paper.viewportCenterX()
         val centerY = paper.viewportCenterY()
         val maxWidth = paper.maxNewItemWidth()
@@ -485,20 +493,17 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                 val item = targetStore.importMedia(uri, kind, centerX, centerY, maxWidth, density)
                 targetStore.loadBitmap(item)
                 post {
-                    if (currentDate == targetDate) {
-                        if (paper.clearGeneration == startGen) {
-                            paper.addImportedItem(item)
-                            targetStore.clearPendingImport(item.ref)
-                        } else {
-                            // Day was cleared while importing; discard the stale file cleanly.
-                            ioExecutor.execute {
-                                runCatching { targetStore.mediaFile(item).delete() }
-                                targetStore.clearPendingImport(item.ref)
-                            }
-                        }
-                    } else {
-                        // User switched days while importing; persist to the original date safely.
+                    if (clearGenerationOf(targetDate) != startGen) {
                         ioExecutor.execute {
+                            runCatching { targetStore.mediaFile(item).delete() }
+                            targetStore.clearPendingImport(item.ref)
+                        }
+                    } else if (currentDate == targetDate) {
+                        paper.addImportedItem(item)
+                        targetStore.clearPendingImport(item.ref)
+                    } else {
+                        // Tracked like stroke writes so switching back to that date waits for it before reading.
+                        pendingEntryWrites[targetDate] = ioExecutor.submit {
                             try {
                                 runCatching {
                                     val existing = targetStore.read()
@@ -681,8 +686,6 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
     private inner class Paper : FrameLayout(context) {
         var fingerInk = false
         var activeTool = DiaryTool.PEN
-        var clearGeneration = 0
-            private set
         private val ink = InProgressStrokesView(context)
         private val renderer = CanvasStrokeRenderer.create()
         private val identity = Matrix()
@@ -690,6 +693,8 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
         private val viewToPaper = Matrix()
         private var strokes = emptyList<Stroke>()
         private var items = emptyList<PaperItem>()
+        private var persistedStrokes = emptyList<Stroke>()
+        private var persistedItems = emptyList<PaperItem>()
         private var selectedItemIds: Set<String> = emptySet()
         private var selectedStrokeIndices: Set<Int> = emptySet()
         private var selectionBounds: RectF? = null
@@ -738,6 +743,8 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                 awaitPendingWrite(entry.date)
                 strokes = entry.read()
                 items = itemsStore.read()
+                persistedStrokes = strokes
+                persistedItems = items
                 readable = true
                 preloadMediaBitmaps()
             } catch (error: Exception) {
@@ -775,7 +782,6 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
         fun currentItems(): List<PaperItem> = items
 
         fun reloadForCurrentDate() {
-            clearGeneration++
             cancelGesture()
             loadingBitmaps.clear()
             selectedItemIds = emptySet()
@@ -790,11 +796,15 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                 awaitPendingWrite(entry.date)
                 strokes = entry.read()
                 items = itemsStore.read()
+                persistedStrokes = strokes
+                persistedItems = items
                 readable = true
                 preloadMediaBitmaps()
             } catch (error: Exception) {
                 strokes = emptyList()
                 items = emptyList()
+                persistedStrokes = strokes
+                persistedItems = items
                 showEntryError(R.string.ink_load_failed, error)
             }
             updateHistoryButtons()
@@ -804,15 +814,23 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
         private fun preloadMediaBitmaps() {
             val store = itemsStore
             val pending = items.filter {
-                (it.kind == PaperItemKind.PHOTO || it.kind == PaperItemKind.VIDEO) && !store.hasBitmapEntry(it)
+                (it.kind == PaperItemKind.PHOTO || it.kind == PaperItemKind.VIDEO || it.kind == PaperItemKind.STICKER) &&
+                    !store.hasBitmapEntry(it)
             }
-            if (pending.isEmpty()) return
             for (item in pending) {
                 requestItemBitmap(item, store)
             }
         }
 
+        // Decoded bitmaps are capped, so only load what is near the viewport; scrolling requests the rest from onDraw.
+        private fun isNearViewport(item: PaperItem): Boolean {
+            if (height <= 0) return true
+            val margin = height.toFloat()
+            return item.y + item.height >= offset - margin && item.y <= offset + height + margin
+        }
+
         private fun requestItemBitmap(item: PaperItem, store: PaperItemsStore) {
+            if (!isNearViewport(item)) return
             val key = "${item.kind.wire}:${item.ref}"
             if (!loadingBitmaps.add(key)) return
             ioExecutor.execute {
@@ -1717,14 +1735,7 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
         private fun applyItemDrag(drag: ItemDrag, dx: Float, dy: Float) {
             val base = drag.startItem
             val updated = when (drag.mode) {
-                DragMode.MOVE -> {
-                    val maxX = (width - base.width).coerceAtLeast(0f)
-                    val maxY = (sheetHeight - base.height).coerceAtLeast(0f)
-                    base.copy(
-                        x = (base.x + dx).coerceIn(0f, maxX),
-                        y = (base.y + dy).coerceIn(0f, maxY),
-                    )
-                }
+                DragMode.MOVE -> keepOnSheet(base.copy(x = base.x + dx, y = base.y + dy))
 
                 DragMode.RESIZE -> {
                     val minW = 44f * density
@@ -1740,19 +1751,18 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                         minWidth = minW,
                         maxWidth = maxW,
                     )
-                    val (clampedX, clampedY) = LassoGeometry.clampItemToSheet(
-                        x = resized[0],
-                        y = resized[1],
-                        width = resized[2],
-                        height = resized[3],
-                        sheetWidth = width.toFloat(),
-                        sheetHeight = sheetHeight,
-                    )
-                    base.copy(x = clampedX, y = clampedY, width = resized[2], height = resized[3])
+                    keepOnSheet(base.copy(x = resized[0], y = resized[1], width = resized[2], height = resized[3]))
                 }
             }
             items = drag.preItems.map { if (it.id == drag.itemId) updated else it }
             invalidate()
+        }
+
+        private fun keepOnSheet(item: PaperItem): PaperItem {
+            val (x, y) = LassoGeometry.clampRotatedItemToSheet(
+                item.x, item.y, item.width, item.height, item.rotation, width.toFloat(), sheetHeight,
+            )
+            return item.copy(x = x, y = y)
         }
 
         fun cancelGesture() {
@@ -1810,7 +1820,7 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
         }
 
         fun clearDay() {
-            clearGeneration++
+            clearGenerations[currentDate] = clearGenerationOf(currentDate) + 1
             stopAudio()
             if (save(emptyList(), emptyList(), allowUnreadable = true)) {
                 readable = true
@@ -1864,14 +1874,31 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
             allowUnreadable: Boolean = false,
         ): Boolean {
             if (!readable && !allowUnreadable) return false
+            val previousStrokes = persistedStrokes
             try {
-                entry.write(nextStrokes)
-                itemsStore.write(nextItems)
+                if (allowUnreadable || nextStrokes !== previousStrokes) {
+                    entry.write(nextStrokes)
+                    persistedStrokes = nextStrokes
+                }
+                if (allowUnreadable || nextItems !== persistedItems) {
+                    try {
+                        itemsStore.write(nextItems)
+                    } catch (error: Exception) {
+                        if (persistedStrokes !== previousStrokes) {
+                            runCatching { entry.write(previousStrokes) }.onSuccess { persistedStrokes = previousStrokes }
+                        }
+                        throw error
+                    }
+                    persistedItems = nextItems
+                }
                 strokes = nextStrokes
                 items = nextItems
                 invalidate()
                 return true
             } catch (error: Exception) {
+                strokes = persistedStrokes
+                items = persistedItems
+                invalidate()
                 showEntryError(R.string.ink_save_failed, error)
                 return false
             }

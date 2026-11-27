@@ -303,6 +303,9 @@ fn ink_grid(weeks: usize, color: u32) -> impl IntoElement {
             let mut stroke = |start: gpui::Point<Pixels>, end: gpui::Point<Pixels>, phase: f32| {
                 let delta = end - start;
                 let length = (delta.x.as_f32().powi(2) + delta.y.as_f32().powi(2)).sqrt();
+                if length <= f32::EPSILON {
+                    return;
+                }
                 let normal = point(-delta.y / length, delta.x / length);
                 for side in [1., -1.] {
                     for step in 0..=64 {
@@ -390,7 +393,7 @@ pub fn pin_picker(
     let activate = Rc::new(activate);
     let options = Pin::ALL.map(|pin| {
         let activate = activate.clone();
-        let (_, label, _) = pin.appearance();
+        let label = pin.label();
         div()
             .id(label)
             .focusable()

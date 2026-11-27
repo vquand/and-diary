@@ -8,8 +8,11 @@ import android.media.ExifInterface
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.provider.OpenableColumns
 import android.util.AtomicFile
+import android.util.LruCache
 import android.webkit.MimeTypeMap
 import org.json.JSONArray
 import org.json.JSONObject
@@ -19,6 +22,7 @@ import java.io.IOException
 import java.time.LocalDate
 import java.util.Locale
 import java.util.UUID
+import java.util.concurrent.Executors
 import kotlin.math.max
 import kotlin.math.roundToInt
 
@@ -124,7 +128,10 @@ internal data class StickerCatalog(
 internal class PaperItemsStore(private val context: Context, val date: LocalDate) {
     private val itemsFile = AtomicFile(File(context.filesDir, "entries/$date.items"))
     private val mediaDir = File(context.filesDir, "media/$date")
-    private val mediaBitmaps = mutableMapOf<String, Bitmap?>()
+    private val mediaBitmaps = object : LruCache<String, Bitmap>(mediaCacheBytes()) {
+        override fun sizeOf(key: String, value: Bitmap): Int = value.byteCount
+    }
+    private val failedMedia = mutableSetOf<String>()
     private val pendingImports = mutableSetOf<String>()
     val catalog: StickerCatalog by lazy { loadCatalog(context) }
     val hanziCatalog: HanziCatalog by lazy { loadHanziCatalog(context) }
@@ -160,9 +167,8 @@ internal class PaperItemsStore(private val context: Context, val date: LocalDate
 
     fun clearMetadataAndCache() {
         itemsFile.delete()
-        synchronized(mediaBitmaps) {
-            mediaBitmaps.clear()
-        }
+        mediaBitmaps.evictAll()
+        synchronized(failedMedia) { failedMedia.clear() }
     }
 
     fun deleteMediaDir() {
@@ -327,74 +333,91 @@ internal class PaperItemsStore(private val context: Context, val date: LocalDate
 
     fun cachedBitmap(item: PaperItem): Bitmap? {
         if (item.kind == PaperItemKind.AUDIO || item.kind == PaperItemKind.HANZI) return null
-        if (item.kind == PaperItemKind.STICKER) return loadStickerBitmap(item.ref)
-        val key = "${item.kind.wire}:${item.ref}"
-        synchronized(mediaBitmaps) {
-            return mediaBitmaps[key]
-        }
+        if (item.kind == PaperItemKind.STICKER) return cachedStickerBitmap(item.ref)
+        return mediaBitmaps.get("${item.kind.wire}:${item.ref}")
     }
 
     fun hasBitmapEntry(item: PaperItem): Boolean {
-        if (item.kind == PaperItemKind.AUDIO || item.kind == PaperItemKind.HANZI || item.kind == PaperItemKind.STICKER) {
-            return true
+        if (item.kind == PaperItemKind.AUDIO || item.kind == PaperItemKind.HANZI) return true
+        if (item.kind == PaperItemKind.STICKER) {
+            return synchronized(stickerBitmaps) { stickerBitmaps.containsKey(item.ref) }
         }
         val key = "${item.kind.wire}:${item.ref}"
-        synchronized(mediaBitmaps) {
-            return mediaBitmaps.containsKey(key)
-        }
+        return mediaBitmaps.get(key) != null || synchronized(failedMedia) { key in failedMedia }
     }
 
     fun loadBitmap(item: PaperItem): Bitmap? {
         if (item.kind == PaperItemKind.AUDIO || item.kind == PaperItemKind.HANZI) return null
         if (item.kind == PaperItemKind.STICKER) return loadStickerBitmap(item.ref)
         val key = "${item.kind.wire}:${item.ref}"
-        synchronized(mediaBitmaps) {
-            if (mediaBitmaps.containsKey(key)) return mediaBitmaps[key]
-        }
+        mediaBitmaps.get(key)?.let { return it }
+        if (synchronized(failedMedia) { key in failedMedia }) return null
 
         val decoded = when (item.kind) {
             PaperItemKind.PHOTO -> decodeSampledFile(mediaFile(item), 1024)
             PaperItemKind.VIDEO -> decodeVideoFrame(mediaFile(item), 640)
             else -> null
         }
-        synchronized(mediaBitmaps) {
-            mediaBitmaps[key] = decoded
+        if (decoded != null) {
+            mediaBitmaps.put(key, decoded)
+        } else {
+            synchronized(failedMedia) { failedMedia.add(key) }
         }
         return decoded
     }
 
+    fun cachedStickerBitmap(stickerId: String): Bitmap? =
+        synchronized(stickerBitmaps) { stickerBitmaps[stickerId] }
+
+    fun loadStickerBitmapAsync(stickerId: String, onLoaded: (Bitmap?) -> Unit) {
+        stickerExecutor.execute {
+            val bitmap = loadStickerBitmap(stickerId)
+            mainHandler.post { onLoaded(bitmap) }
+        }
+    }
+
+    /** Blocking; call off the UI thread. A sheet is decoded once, sliced into every cell, then released. */
     fun loadStickerBitmap(stickerId: String): Bitmap? {
         synchronized(stickerBitmaps) {
             if (stickerBitmaps.containsKey(stickerId)) return stickerBitmaps[stickerId]
         }
-        val spec = catalog.specFor(stickerId)
-        val decoded = if (spec?.sheet != null) {
-            val sheetBmp = synchronized(sheetBitmaps) {
-                sheetBitmaps.getOrPut(spec.sheet) {
-                    runCatching {
-                        context.assets.open("stickers/${spec.sheet}").use(BitmapFactory::decodeStream)
-                    }.getOrNull()
-                }
+        val sheet = catalog.specFor(stickerId)?.sheet
+        if (sheet != null) {
+            synchronized(sheetLock) {
+                val alreadyLoaded = synchronized(stickerBitmaps) { stickerBitmaps.containsKey(stickerId) }
+                if (!alreadyLoaded) sliceStickerSheet(sheet)
             }
-            if (sheetBmp != null && spec.cols > 0 && spec.rows > 0) {
-                val cellW = sheetBmp.width / spec.cols
-                val cellH = sheetBmp.height / spec.rows
-                val x = (spec.col * cellW).coerceIn(0, (sheetBmp.width - cellW).coerceAtLeast(0))
-                val y = (spec.row * cellH).coerceIn(0, (sheetBmp.height - cellH).coerceAtLeast(0))
-                runCatching { Bitmap.createBitmap(sheetBmp, x, y, cellW, cellH) }.getOrNull()
-            } else {
-                null
-            }
-        } else {
-            val file = catalog.fileFor(stickerId)
-            runCatching {
-                context.assets.open("stickers/$file").use(BitmapFactory::decodeStream)
-            }.getOrNull()
+            return cachedStickerBitmap(stickerId)
         }
+        val decoded = runCatching {
+            context.assets.open("stickers/${catalog.fileFor(stickerId)}").use(BitmapFactory::decodeStream)
+        }.getOrNull()
         synchronized(stickerBitmaps) {
             stickerBitmaps[stickerId] = decoded
         }
         return decoded
+    }
+
+    private fun sliceStickerSheet(sheet: String) {
+        val sheetBmp = runCatching {
+            context.assets.open("stickers/$sheet").use(BitmapFactory::decodeStream)
+        }.getOrNull()
+        val cells = catalog.stickers.filter { it.sheet == sheet }.associate { spec ->
+            spec.id to sheetBmp?.let { cropStickerCell(it, spec) }
+        }
+        synchronized(stickerBitmaps) {
+            stickerBitmaps.putAll(cells)
+        }
+        if (sheetBmp != null && cells.values.none { it === sheetBmp }) sheetBmp.recycle()
+    }
+
+    private fun cropStickerCell(sheetBmp: Bitmap, spec: StickerSpec): Bitmap? {
+        if (spec.cols <= 0 || spec.rows <= 0) return null
+        val cellW = sheetBmp.width / spec.cols
+        val cellH = sheetBmp.height / spec.rows
+        val x = (spec.col * cellW).coerceIn(0, (sheetBmp.width - cellW).coerceAtLeast(0))
+        val y = (spec.row * cellH).coerceIn(0, (sheetBmp.height - cellH).coerceAtLeast(0))
+        return runCatching { Bitmap.createBitmap(sheetBmp, x, y, cellW, cellH) }.getOrNull()
     }
 
     private fun decodeSampledFile(file: File, maxDim: Int): Bitmap? {
@@ -468,26 +491,10 @@ internal class PaperItemsStore(private val context: Context, val date: LocalDate
     }
 
     private fun applyExifOrientation(bitmap: Bitmap, orientation: Int): Bitmap {
+        val (degrees, flip) = exifTransform(orientation) ?: return bitmap
         val matrix = Matrix()
-        when (orientation) {
-            ExifInterface.ORIENTATION_FLIP_HORIZONTAL -> matrix.setScale(-1f, 1f)
-            ExifInterface.ORIENTATION_ROTATE_180 -> matrix.setRotate(180f)
-            ExifInterface.ORIENTATION_FLIP_VERTICAL -> {
-                matrix.setRotate(180f)
-                matrix.postScale(-1f, 1f)
-            }
-            ExifInterface.ORIENTATION_TRANSPOSE -> {
-                matrix.setRotate(90f)
-                matrix.postScale(-1f, 1f)
-            }
-            ExifInterface.ORIENTATION_ROTATE_90 -> matrix.setRotate(90f)
-            ExifInterface.ORIENTATION_TRANSVERSE -> {
-                matrix.setRotate(-90f)
-                matrix.postScale(-1f, 1f)
-            }
-            ExifInterface.ORIENTATION_ROTATE_270 -> matrix.setRotate(270f)
-            else -> return bitmap
-        }
+        matrix.setRotate(degrees)
+        if (flip) matrix.postScale(-1f, 1f)
         return runCatching {
             Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
         }.getOrDefault(bitmap)
@@ -504,8 +511,27 @@ internal class PaperItemsStore(private val context: Context, val date: LocalDate
     companion object {
         private var cachedCatalog: StickerCatalog? = null
         private var cachedHanzi: HanziCatalog? = null
-        private val sheetBitmaps = mutableMapOf<String, Bitmap?>()
         private val stickerBitmaps = mutableMapOf<String, Bitmap?>()
+        private val sheetLock = Any()
+        private val stickerExecutor = Executors.newSingleThreadExecutor { runnable ->
+            Thread(runnable, "DiaryStickerIO").apply { isDaemon = true }
+        }
+        private val mainHandler by lazy { Handler(Looper.getMainLooper()) }
+
+        private fun mediaCacheBytes(): Int =
+            (Runtime.getRuntime().maxMemory() / 8).coerceIn(16L shl 20, 128L shl 20).toInt()
+
+        /** Rotation in degrees (clockwise) applied first, then an optional horizontal flip; null when upright. */
+        fun exifTransform(orientation: Int): Pair<Float, Boolean>? = when (orientation) {
+            ExifInterface.ORIENTATION_FLIP_HORIZONTAL -> 0f to true
+            ExifInterface.ORIENTATION_ROTATE_180 -> 180f to false
+            ExifInterface.ORIENTATION_FLIP_VERTICAL -> 180f to true
+            ExifInterface.ORIENTATION_TRANSPOSE -> 90f to true
+            ExifInterface.ORIENTATION_ROTATE_90 -> 90f to false
+            ExifInterface.ORIENTATION_TRANSVERSE -> -90f to true
+            ExifInterface.ORIENTATION_ROTATE_270 -> 270f to false
+            else -> null
+        }
 
         fun webpCompressFormat(): Bitmap.CompressFormat =
             if (Build.VERSION.SDK_INT >= 30) {

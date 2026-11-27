@@ -94,7 +94,11 @@ internal class PaperItemRenderer(
         when (item.kind) {
             PaperItemKind.STICKER -> {
                 val bmp = itemsStore.cachedBitmap(item)
-                if (bmp != null) canvas.drawBitmap(bmp, null, rect, null)
+                if (bmp != null) {
+                    canvas.drawBitmap(bmp, null, rect, null)
+                } else if (!itemsStore.hasBitmapEntry(item)) {
+                    requestBitmap(item, itemsStore)
+                }
             }
 
             PaperItemKind.PHOTO -> {

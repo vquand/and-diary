@@ -149,20 +149,21 @@ internal object LassoGeometry {
     }
 
     /**
-     * Clamps an item's top-left (x, y) so it stays within the sheet bounds
-     * and remains reachable.
+     * Returns the (x, y) that keeps the rotated item's visual bounds inside the sheet,
+     * so its handles stay reachable.
      */
-    fun clampItemToSheet(
+    fun clampRotatedItemToSheet(
         x: Float,
         y: Float,
         width: Float,
         height: Float,
+        rotationDeg: Float,
         sheetWidth: Float,
         sheetHeight: Float,
     ): Pair<Float, Float> {
-        val maxX = (sheetWidth - width).coerceAtLeast(0f)
-        val maxY = (sheetHeight - height).coerceAtLeast(0f)
-        return x.coerceIn(0f, maxX) to y.coerceIn(0f, maxY)
+        val b = rotatedRectBounds(x, y, width, height, rotationDeg)
+        val (shiftX, shiftY) = computeGroupClampShift(b[0], b[1], b[2], b[3], sheetWidth, sheetHeight)
+        return (x + shiftX) to (y + shiftY)
     }
 
     /**

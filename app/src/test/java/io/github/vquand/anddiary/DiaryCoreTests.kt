@@ -1,5 +1,6 @@
 package io.github.vquand.anddiary
 
+import android.media.ExifInterface
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -247,14 +248,24 @@ class DiaryCoreTests {
     }
 
     @Test
-    fun clampItemToSheetKeepsItemsReachable() {
-        val (x1, y1) = LassoGeometry.clampItemToSheet(-50f, -20f, 80f, 80f, 600f, 1200f)
+    fun clampRotatedItemToSheetKeepsItemsReachable() {
+        val (x1, y1) = LassoGeometry.clampRotatedItemToSheet(-50f, -20f, 80f, 80f, 0f, 600f, 1200f)
         assertEquals(0f, x1, 0.01f)
         assertEquals(0f, y1, 0.01f)
 
-        val (x2, y2) = LassoGeometry.clampItemToSheet(700f, 1300f, 80f, 80f, 600f, 1200f)
+        val (x2, y2) = LassoGeometry.clampRotatedItemToSheet(700f, 1300f, 80f, 80f, 0f, 600f, 1200f)
         assertEquals(520f, x2, 0.01f)
         assertEquals(1120f, y2, 0.01f)
+    }
+
+    @Test
+    fun clampRotatedItemToSheetUsesRotatedBounds() {
+        // A 256x58 card rotated 90deg occupies 58 wide by 256 tall around its center.
+        val (x, y) = LassoGeometry.clampRotatedItemToSheet(100f, 0f, 256f, 58f, 90f, 600f, 1200f)
+        val b = LassoGeometry.rotatedRectBounds(x, y, 256f, 58f, 90f)
+        assertEquals(0f, b[1], 0.01f)
+        assertEquals(256f, b[3] - b[1], 0.01f)
+        assertEquals(100f, x, 0.01f)
     }
 
     @Test
@@ -315,5 +326,79 @@ class DiaryCoreTests {
         } finally {
             dir.deleteRecursively()
         }
+    }
+
+    @Test
+    fun writeUniqueFileKeepsSuccessfulWritesAndRemovesFailedOnes() {
+        val dir = Files.createTempDirectory("diary-export-write-test").toFile()
+        try {
+            File(dir, "shot.png").writeText("old")
+            val saved = SelectionExporter.writeUniqueFile(dir, "shot.png") { out ->
+                out.write(1)
+                true
+            }
+            assertEquals("shot (1).png", saved.name)
+            assertEquals(1L, saved.length())
+
+            val compressFailure = runCatching {
+                SelectionExporter.writeUniqueFile(dir, "shot.png") { false }
+            }
+            assertTrue(compressFailure.exceptionOrNull() is IOException)
+
+            val writeFailure = runCatching {
+                SelectionExporter.writeUniqueFile(dir, "shot.png") { out ->
+                    out.write(1)
+                    throw IOException("disk full")
+                }
+            }
+            assertTrue(writeFailure.exceptionOrNull() is IOException)
+            assertEquals(setOf("shot.png", "shot (1).png"), dir.list()!!.toSet())
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun itemsJsonRoundTripsRotationAndAcceptsFilesWithoutIt() {
+        val item = PaperItem(
+            id = "a",
+            kind = PaperItemKind.PHOTO,
+            ref = "a.webp",
+            label = "Trip",
+            durationMs = 0L,
+            x = 12f,
+            y = 34.5f,
+            width = 200f,
+            height = 120f,
+            score = 0,
+            rotation = -37.5f,
+        )
+        val decoded = PaperItemsStore.decodeItemsJson(PaperItemsStore.encodeItemsJson(listOf(item)))
+        assertEquals(listOf(item), decoded)
+
+        val legacy = """[{"id":"b","kind":"sticker","ref":"star","label":"Star","x":1,"y":2,"width":3,"height":4}]"""
+        val legacyItem = PaperItemsStore.decodeItemsJson(legacy).single()
+        assertEquals(0f, legacyItem.rotation, 0.001f)
+        assertEquals(0, legacyItem.score)
+        assertEquals(0L, legacyItem.durationMs)
+    }
+
+    @Test
+    fun itemsJsonRejectsUnknownKinds() {
+        val json = """[{"id":"c","kind":"hologram","ref":"x","x":0,"y":0,"width":1,"height":1}]"""
+        assertTrue(runCatching { PaperItemsStore.decodeItemsJson(json) }.exceptionOrNull() is IOException)
+    }
+
+    @Test
+    fun exifOrientationMapsToRotationAndFlip() {
+        assertNull(PaperItemsStore.exifTransform(ExifInterface.ORIENTATION_NORMAL))
+        assertNull(PaperItemsStore.exifTransform(ExifInterface.ORIENTATION_UNDEFINED))
+        assertEquals(90f to false, PaperItemsStore.exifTransform(ExifInterface.ORIENTATION_ROTATE_90))
+        assertEquals(180f to false, PaperItemsStore.exifTransform(ExifInterface.ORIENTATION_ROTATE_180))
+        assertEquals(270f to false, PaperItemsStore.exifTransform(ExifInterface.ORIENTATION_ROTATE_270))
+        assertEquals(0f to true, PaperItemsStore.exifTransform(ExifInterface.ORIENTATION_FLIP_HORIZONTAL))
+        assertEquals(180f to true, PaperItemsStore.exifTransform(ExifInterface.ORIENTATION_FLIP_VERTICAL))
+        assertEquals(90f to true, PaperItemsStore.exifTransform(ExifInterface.ORIENTATION_TRANSPOSE))
+        assertEquals(-90f to true, PaperItemsStore.exifTransform(ExifInterface.ORIENTATION_TRANSVERSE))
     }
 }

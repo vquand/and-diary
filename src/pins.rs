@@ -42,21 +42,21 @@ impl Pin {
     ];
 
     #[cfg(target_os = "android")]
-    pub fn appearance(self) -> (&'static str, &'static str, u32) {
+    pub fn label(self) -> &'static str {
         match self {
-            Self::Star => ("★", "Star", 0x986315),
-            Self::Heart => ("♡", "Heart", 0x9e3f55),
-            Self::Flower => ("✿", "Flower", 0x765499),
-            Self::Sun => ("✺", "Sun", 0x9c541b),
-            Self::Important => ("!", "Important", 0x245850),
-            Self::Cat => ("cat", "Cat", 0x805a3d),
-            Self::Dog => ("dog", "Dog", 0x8b704d),
-            Self::Slime => ("slime", "Slime", 0x597044),
-            Self::Dragon => ("dragon", "Dragon", 0x78618c),
-            Self::Sunrise => ("sunrise", "Sunrise", 0xa16f3c),
-            Self::Rain => ("rain", "Rain", 0x4f6a83),
-            Self::Mist => ("mist", "Mist", 0x78817b),
-            Self::Cloud => ("cloud", "Cloud", 0x617b88),
+            Self::Star => "Star",
+            Self::Heart => "Heart",
+            Self::Flower => "Flower",
+            Self::Sun => "Sun",
+            Self::Important => "Important",
+            Self::Cat => "Cat",
+            Self::Dog => "Dog",
+            Self::Slime => "Slime",
+            Self::Dragon => "Dragon",
+            Self::Sunrise => "Sunrise",
+            Self::Rain => "Rain",
+            Self::Mist => "Mist",
+            Self::Cloud => "Cloud",
         }
     }
 }
