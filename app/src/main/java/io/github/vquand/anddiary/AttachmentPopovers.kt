@@ -236,7 +236,12 @@ internal class StickerPickerPopover(
                         isClickable = true
                         setPadding(dp(4), dp(6), dp(4), dp(6))
                         addView(ImageView(context).apply {
-                            setImageBitmap(store.loadStickerBitmap(spec.id))
+                            val cached = store.cachedStickerBitmap(spec.id)
+                            if (cached != null) {
+                                setImageBitmap(cached)
+                            } else {
+                                store.loadStickerBitmapAsync(spec.id) { bitmap -> setImageBitmap(bitmap) }
+                            }
                             scaleType = ImageView.ScaleType.FIT_CENTER
                             contentDescription = spec.description.ifBlank { spec.label }
                         }, LayoutParams(dp(48), dp(48)))

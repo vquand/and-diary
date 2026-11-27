@@ -81,22 +81,57 @@ fn has_completed_hanzi(json: &str) -> bool {
     false
 }
 
-fn object_has_completed_hanzi(body: &str) -> bool {
-    if !body.contains("\"kind\":\"hanzi\"") && !body.contains("\"kind\": \"hanzi\"") {
-        return false;
+/// Reads the remainder of a JSON string whose opening quote was already consumed.
+fn read_json_string(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> String {
+    let mut out = String::new();
+    let mut escaped = false;
+    for ch in chars.by_ref() {
+        if escaped {
+            out.push(ch);
+            escaped = false;
+        } else if ch == '\\' {
+            escaped = true;
+        } else if ch == '"' {
+            break;
+        } else {
+            out.push(ch);
+        }
     }
-    let Some((_, rest)) = body.split_once("\"score\"") else {
-        return false;
-    };
-    let digits: String = rest
-        .trim_start()
-        .strip_prefix(':')
-        .unwrap_or("")
-        .trim_start()
-        .chars()
-        .take_while(|c| c.is_ascii_digit())
-        .collect();
-    digits.parse::<u32>().is_ok_and(|score| score > 0)
+    out
+}
+
+/// Checks one flat item object body. Quoted values are consumed whole, so a label that
+/// contains `"kind":"hanzi"` or `"score":9` never counts as a field.
+fn object_has_completed_hanzi(body: &str) -> bool {
+    let mut chars = body.chars().peekable();
+    let mut is_hanzi = false;
+    let mut score = 0u32;
+    while let Some(ch) = chars.next() {
+        if ch != '"' {
+            continue;
+        }
+        let key = read_json_string(&mut chars);
+        while chars.next_if(|c| c.is_whitespace()).is_some() {}
+        if chars.next_if_eq(&':').is_none() {
+            continue;
+        }
+        while chars.next_if(|c| c.is_whitespace()).is_some() {}
+        if chars.next_if_eq(&'"').is_some() {
+            let value = read_json_string(&mut chars);
+            if key == "kind" {
+                is_hanzi = value == "hanzi";
+            }
+        } else {
+            let mut token = String::new();
+            while let Some(c) = chars.next_if(|c| *c != ',') {
+                token.push(c);
+            }
+            if key == "score" {
+                score = token.trim().parse::<u32>().unwrap_or(0);
+            }
+        }
+    }
+    is_hanzi && score > 0
 }
 
 fn entry_date(filename: &str) -> Option<NaiveDate> {
@@ -147,6 +182,14 @@ mod tests {
         // Braces inside quoted labels must not truncate the JSON object scan.
         assert!(has_completed_hanzi(
             r#"[{"kind":"hanzi","label":"note}1\"x","ref":"永","score":88}]"#
+        ));
+
+        // Text inside a quoted label is never a field.
+        assert!(!has_completed_hanzi(
+            r#"[{"kind":"photo","label":"\"kind\":\"hanzi\",\"score\":99","ref":"a.webp","score":0}]"#
+        ));
+        assert!(!has_completed_hanzi(
+            r#"[{"kind":"hanzi","label":"x\"score\":99","ref":"永","score":0}]"#
         ));
 
         let dir = std::env::temp_dir().join(format!("and-diary-hanzi-{}", std::process::id()));

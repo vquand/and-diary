@@ -31,3 +31,6 @@ rustc-ice-*.txt
 
 __pycache__/
 *.pyc
+
+# Local demo captures. Do not commit.
+docs/screenshots/

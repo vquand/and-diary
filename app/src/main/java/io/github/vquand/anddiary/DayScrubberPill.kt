@@ -25,7 +25,7 @@ internal class DayScrubberPill(
     private var palette = DiarySettings.palette(context)
     private var baseDate: LocalDate = LocalDate.now()
     private var offsetDays: Float = 0f
-    private val hasEntryCache = mutableMapOf<LocalDate, Boolean>()
+    private var savedDays: Set<String> = emptySet()
 
     private val monthFormatter = DateTimeFormatter.ofPattern("MMMM yyyy", Locale.getDefault())
 
@@ -66,7 +66,7 @@ internal class DayScrubberPill(
     fun showScrubber(currentDate: LocalDate) {
         baseDate = currentDate
         offsetDays = 0f
-        hasEntryCache.clear()
+        savedDays = scanSavedDays()
         animate().cancel()
         visibility = VISIBLE
         alpha = 0f
@@ -115,10 +115,15 @@ internal class DayScrubberPill(
             .start()
     }
 
-    private fun hasEntry(date: LocalDate): Boolean =
-        hasEntryCache.getOrPut(date) {
-            File(entriesDir, "$date.ink").isFile || File(entriesDir, "$date.items").isFile
+    private fun hasEntry(date: LocalDate): Boolean = date.toString() in savedDays
+
+    private fun scanSavedDays(): Set<String> {
+        val days = HashSet<String>()
+        for (name in entriesDir.list().orEmpty()) {
+            if (name.endsWith(".ink") || name.endsWith(".items")) days.add(name.substringBeforeLast('.'))
         }
+        return days
+    }
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
