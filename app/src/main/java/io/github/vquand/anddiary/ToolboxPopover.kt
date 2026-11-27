@@ -2,19 +2,23 @@ package io.github.vquand.anddiary
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.content.res.ColorStateList
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
-import android.graphics.Path
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.LayerDrawable
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
 import android.widget.FrameLayout
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.SeekBar
 import android.widget.TextView
+import androidx.ink.brush.Brush
+import androidx.ink.rendering.android.canvas.CanvasStrokeRenderer
+import androidx.ink.strokes.StrokeInputBatch
 import java.util.Locale
 import kotlin.math.roundToInt
 
@@ -23,6 +27,7 @@ internal class ToolboxPopover(
     context: Context,
     private val brushes: DiaryBrushes,
     private val onChanged: () -> Unit,
+    private val onOpenBrushBank: () -> Unit = {},
 ) : LinearLayout(context) {
     private val density = resources.displayMetrics.density
     private var palette = DiarySettings.palette(context)
@@ -37,6 +42,16 @@ internal class ToolboxPopover(
         setTextColor(palette.text)
         setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
         paint.isFakeBoldText = true
+    }
+    private val bankSettingsButton = ImageView(context).apply {
+        setImageResource(R.drawable.ic_brush_bank_settings)
+        scaleType = ImageView.ScaleType.FIT_CENTER
+        imageTintList = ColorStateList.valueOf(palette.text)
+        setPadding(dp(6), dp(6), dp(6), dp(6))
+        isClickable = true
+        visibility = GONE
+        contentDescription = context.getString(R.string.brush_bank_settings)
+        setOnClickListener { onOpenBrushBank() }
     }
     private val previewView = StrokePreviewView(context)
     private val colorSection = LinearLayout(context).apply { orientation = VERTICAL }
@@ -76,11 +91,12 @@ internal class ToolboxPopover(
         elevation = 8f * density
         applyCardBackground()
 
-        // Header: tool title + live stroke/eraser preview
+        // Header: tool title + optional brush bank button + live stroke/eraser preview
         addView(LinearLayout(context).apply {
             orientation = HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             addView(titleView, LayoutParams(0, LayoutParams.WRAP_CONTENT, 1f))
+            addView(bankSettingsButton, LayoutParams(dp(32), dp(32)).apply { marginEnd = dp(6) })
             addView(previewView, LayoutParams(dp(110), dp(34)))
         }, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT))
 
@@ -182,10 +198,15 @@ internal class ToolboxPopover(
         syncFromState()
     }
 
+    fun refresh() {
+        syncFromState()
+    }
+
     fun applyPalette(next: DiaryPalette) {
         palette = next
         applyCardBackground()
         titleView.setTextColor(palette.text)
+        bankSettingsButton.imageTintList = ColorStateList.valueOf(palette.text)
         hexLabel.setTextColor(palette.muted)
         sizeTitle.setTextColor(palette.muted)
         sizeValue.setTextColor(palette.text)
@@ -209,10 +230,17 @@ internal class ToolboxPopover(
             when (tool) {
                 DiaryTool.PEN -> R.string.pen
                 DiaryTool.BRUSH -> R.string.brush
+                DiaryTool.BANK -> brushes.bankBrush.nameRes
                 DiaryTool.ERASER -> R.string.eraser
                 DiaryTool.SELECT -> R.string.select
             },
         )
+        bankSettingsButton.visibility = if (tool == DiaryTool.BANK) VISIBLE else GONE
+        bankSettingsButton.background = GradientDrawable().apply {
+            setColor(palette.paperSoft)
+            setStroke(dp(1), palette.rule)
+            cornerRadius = 8f * density
+        }
         colorSection.visibility = if (tool == DiaryTool.ERASER) GONE else VISIBLE
         customPanel.visibility = if (tool != DiaryTool.ERASER && customExpanded) VISIBLE else GONE
         sizeTitle.setText(if (tool == DiaryTool.ERASER) R.string.eraser_size else R.string.stroke_size)
@@ -377,6 +405,7 @@ internal class ToolboxPopover(
     private fun dp(value: Int) = (value * density).roundToInt()
 
     private inner class StrokePreviewView(context: Context) : View(context) {
+        private val strokeRenderer = CanvasStrokeRenderer.create(brushes.textureStore)
         private val strokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.STROKE
             strokeCap = Paint.Cap.ROUND
@@ -385,7 +414,16 @@ internal class ToolboxPopover(
         private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.FILL
         }
-        private val path = Path()
+        private var sampleInputs: StrokeInputBatch? = null
+
+        override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+            super.onSizeChanged(w, h, oldw, oldh)
+            sampleInputs = if (w > 0 && h > 0) {
+                PreviewStrokeRenderer.buildSampleInputs(w.toFloat(), h.toFloat(), density)
+            } else {
+                null
+            }
+        }
 
         override fun onDraw(canvas: Canvas) {
             super.onDraw(canvas)
@@ -404,20 +442,15 @@ internal class ToolboxPopover(
                 return
             }
 
-            val startX = 12f * density
-            val endX = width - 12f * density
-            val amp = 6f * density
-            val strokePx = (brushes.sizeDpFor(tool) * density).coerceIn(1.5f * density, 18f * density)
-            strokePaint.color = brushes.colorFor(tool)
-            strokePaint.strokeWidth = strokePx
-            path.reset()
-            path.moveTo(startX, cy + amp * 0.4f)
-            path.cubicTo(
-                startX + (endX - startX) * 0.33f, cy - amp,
-                startX + (endX - startX) * 0.66f, cy + amp,
-                endX, cy - amp * 0.4f,
+            val inputs = sampleInputs ?: return
+            val baseBrush = brushes.brushFor(tool)
+            val previewBrush = Brush.createWithColorIntArgb(
+                baseBrush.family,
+                baseBrush.colorIntArgb,
+                baseBrush.size.coerceIn(1.5f * density, 18f * density),
+                baseBrush.epsilon,
             )
-            canvas.drawPath(path, strokePaint)
+            PreviewStrokeRenderer.drawPreview(canvas, strokeRenderer, previewBrush, inputs)
         }
     }
 

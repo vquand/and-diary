@@ -154,4 +154,125 @@ class DiaryCoreTests {
         }
         assertTrue(threw)
     }
+
+    @Test
+    fun brushBankRegistryIsOrderedUniqueAndRoundTrips() {
+        val expectedIds = listOf(
+            "pencil",
+            "chinese-ink-brush",
+            "calligraphy-quill",
+            "airbrush",
+            "charcoal",
+        )
+        val expectedCodes = listOf(16, 17, 18, 19, 20)
+
+        assertEquals(expectedIds, BrushBank.all.map { it.id })
+        assertEquals(expectedCodes, BrushBank.all.map { it.storageCode })
+        assertEquals(BrushBank.all.size, BrushBank.all.map { it.id }.toSet().size)
+        assertEquals(BrushBank.all.size, BrushBank.all.map { it.storageCode }.toSet().size)
+
+        for (spec in BrushBank.all) {
+            assertEquals(spec, BrushBank.byId(spec.id))
+            assertEquals(spec, BrushBank.byStorageCode(spec.storageCode))
+            assertTrue(spec.minSizeDp > 0f && spec.defaultSizeDp in spec.minSizeDp..spec.maxSizeDp)
+        }
+        assertNull(BrushBank.byId("nonexistent-brush"))
+        assertNull(BrushBank.byStorageCode(99))
+        assertEquals("pencil", BrushBank.defaultSpec.id)
+    }
+
+    @Test
+    fun brushBankSelectionPersistsAndFallsBackToPencil() {
+        val backingStrings = mutableMapOf<String, String>()
+        val backingFloats = mutableMapOf<String, Float>()
+        val store = object : KeyValueStore {
+            override fun getString(key: String): String? = backingStrings[key]
+            override fun putString(key: String, value: String) {
+                backingStrings[key] = value
+            }
+
+            override fun getFloat(key: String): Float? = backingFloats[key]
+            override fun putFloat(key: String, value: Float) {
+                backingFloats[key] = value
+            }
+        }
+
+        val first = BrushBankSelection(store)
+        assertEquals("pencil", first.selectedId)
+        assertEquals("pencil", first.selectedSpec.id)
+        assertEquals(2.5f, first.sizeFor(first.selectedSpec), 0.001f)
+
+        val quill = first.select("calligraphy-quill")
+        first.setSize(quill, 18f)
+        val airbrush = BrushBank.byId("airbrush")!!
+        first.setSize(airbrush, 36f)
+
+        val reloaded = BrushBankSelection(store)
+        assertEquals("calligraphy-quill", reloaded.selectedId)
+        assertEquals(18, reloaded.selectedSpec.storageCode)
+        assertEquals(18f, reloaded.sizeFor(quill), 0.001f)
+        assertEquals(36f, reloaded.sizeFor(airbrush), 0.001f)
+        assertEquals(2.5f, reloaded.sizeFor(BrushBank.defaultSpec), 0.001f)
+
+        // Unknown / removed brush id falls back to default "pencil".
+        store.putString(BrushBankSelection.KEY_BANK_BRUSH_ID, "removed-legacy-brush")
+        assertEquals("pencil", reloaded.selectedId)
+        assertEquals(16, reloaded.selectedSpec.storageCode)
+    }
+
+    @Test
+    fun inkEntrySupportsBankBrushCodesAndLegacyKindsAndRejectsUnknownCode() {
+        val records = listOf(
+            InkEntry.RawStrokeRecord(InkEntry.PEN, 0xff283948.toInt(), 3f, 0.2f, byteArrayOf(10, 20)),
+            InkEntry.RawStrokeRecord(InkEntry.SOFT_BRUSH, 0xff272320.toInt(), 12f, 0.2f, byteArrayOf(30, 40)),
+            InkEntry.RawStrokeRecord(17, 0xff272320.toInt(), 10f, 0.2f, byteArrayOf(50, 60, 70)),
+            InkEntry.RawStrokeRecord(20, 0xff984631.toInt(), 14f, 0.2f, byteArrayOf(80, 90)),
+        )
+        val out = ByteArrayOutputStream()
+        DataOutputStream(out).use { InkEntry.encodeRecords(it, records) }
+        val decoded = InkEntry.decodeRecords(out.toByteArray())
+        assertEquals(listOf(0, 1, 17, 20), decoded.map { it.brushKind })
+        assertArrayEquals(byteArrayOf(50, 60, 70), decoded[2].payload)
+
+        // Unknown brush code must be rejected with IOException.
+        val badOut = ByteArrayOutputStream()
+        DataOutputStream(badOut).use {
+            InkEntry.encodeRecords(
+                it,
+                listOf(InkEntry.RawStrokeRecord(99, 0xff000000.toInt(), 5f, 0.2f, byteArrayOf(1, 2))),
+            )
+        }
+        var threw = false
+        try {
+            InkEntry.decodeRecords(badOut.toByteArray())
+        } catch (_: IOException) {
+            threw = true
+        }
+        assertTrue(threw)
+    }
+
+    @Test
+    fun proceduralStampsAreDeterministicAndWithinByteBounds() {
+        for (kind in ProceduralStampKind.entries) {
+            val a = BrushStampGenerator.generateAlphaMask(kind, size = 32, seed = 16L)
+            val b = BrushStampGenerator.generateAlphaMask(kind, size = 32, seed = 16L)
+            assertEquals(32 * 32, a.size)
+            assertArrayEquals(a, b)
+            for (alpha in a) {
+                assertTrue("Alpha out of bounds: $alpha", alpha in 0..255)
+            }
+        }
+
+        // Grayscale opaque pixels convert luminance -> alpha while transparent pixels preserve alpha.
+        val opaqueGray = intArrayOf(0xff000000.toInt(), 0xffffffff.toInt(), 0xff808080.toInt())
+        val convertedOpaque = BrushStampGenerator.grayscalePixelsToMaskArgb(opaqueGray)
+        assertEquals(0x00ffffff, convertedOpaque[0])
+        assertEquals(0xffffffff.toInt(), convertedOpaque[1])
+        assertEquals(128, (convertedOpaque[2] ushr 24) and 0xff)
+
+        val alphaMask = intArrayOf(0x40123456, 0x00000000)
+        val preservedAlpha = BrushStampGenerator.grayscalePixelsToMaskArgb(alphaMask)
+        assertEquals(0x40ffffff, preservedAlpha[0])
+        assertEquals(0x00ffffff, preservedAlpha[1])
+    }
 }

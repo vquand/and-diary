@@ -2,6 +2,14 @@
     <string name="app_name">Diary</string>
     <string name="pen">Pen</string>
     <string name="brush">Brush</string>
+    <string name="brush_bank">Brush bank</string>
+    <string name="brush_bank_settings">Brush bank settings</string>
+    <string name="brush_pencil">Pencil</string>
+    <string name="brush_chinese_ink_brush">Chinese Ink Brush</string>
+    <string name="brush_calligraphy_quill">Calligraphy Quill</string>
+    <string name="brush_airbrush">Airbrush</string>
+    <string name="brush_charcoal">Charcoal</string>
+    <string name="star_brush">Star brush</string>
     <string name="eraser">Eraser</string>
     <string name="select">Select</string>
     <string name="sticker">Sticker</string>
