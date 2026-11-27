@@ -66,7 +66,7 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
     private var isSwitchingDate = false
     private val mainHandler = Handler(Looper.getMainLooper())
     private val clearGenerations = mutableMapOf<LocalDate, Int>()
-    private val contourSaveTokens = mutableMapOf<String, Long>()
+    private val contourSaveTokens = mutableMapOf<Pair<LocalDate, String>, Long>()
     private var nextContourToken = 1L
     private fun clearGenerationOf(date: LocalDate) = clearGenerations[date] ?: 0
     private val paper = Paper()
@@ -462,9 +462,10 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
         val centerY = paper.viewportCenterY()
         val maxWidth = paper.maxNewItemWidth()
         val existingId = existingItem?.id
-        val saveToken = existingId?.let { id ->
+        val tokenKey = existingId?.let { targetDate to it }
+        val saveToken = tokenKey?.let { key ->
             val token = nextContourToken++
-            contourSaveTokens[id] = token
+            contourSaveTokens[key] = token
             token
         }
         ioExecutor.execute {
@@ -503,7 +504,8 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                 }
                 Log.e("DiaryContour", "Could not save contour terrain", error)
                 mainHandler.post {
-                    if (existingId != null && contourSaveTokens[existingId] == saveToken) {
+                    if (tokenKey != null && contourSaveTokens[tokenKey] == saveToken) {
+                        contourSaveTokens.remove(tokenKey)
                         paper.clearFinalizingContourPreview(existingId)
                     }
                     Toast.makeText(context, R.string.contour_save_failed, Toast.LENGTH_LONG).show()
@@ -521,12 +523,16 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
         item: PaperItem,
     ) {
         mainHandler.post {
-            if (existingItemId != null && saveToken != null && contourSaveTokens[existingItemId] != saveToken) {
-                ioExecutor.execute {
-                    runCatching { targetStore.mediaFile(item).delete() }
-                    targetStore.clearPendingImport(item.ref)
+            val tokenKey = existingItemId?.let { targetDate to it }
+            if (tokenKey != null && saveToken != null) {
+                if (contourSaveTokens[tokenKey] != saveToken) {
+                    ioExecutor.execute {
+                        runCatching { targetStore.mediaFile(item).delete() }
+                        targetStore.clearPendingImport(item.ref)
+                    }
+                    return@post
                 }
-                return@post
+                contourSaveTokens.remove(tokenKey)
             }
             if (existingItemId != null) {
                 paper.clearFinalizingContourPreview(existingItemId)
@@ -1022,7 +1028,6 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
             loadingBitmaps.clear()
             preloadedContours.clear()
             finalizingContourPreviews.clear()
-            contourSaveTokens.clear()
             selectedItemIds = emptySet()
             selectedStrokeIndices = emptySet()
             selectionBounds = null
@@ -1861,7 +1866,7 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                 val ratio = if (item.width > 0f) newW / item.width else 1f
                 val newH = (item.height * ratio).coerceAtLeast(24f * density)
                 val newRot = if (item.kind == PaperItemKind.CONTOUR) {
-                    0f
+                    item.rotation
                 } else {
                     LassoGeometry.normalizeAngle(item.rotation + transform.rotationDeg)
                 }
@@ -2340,7 +2345,7 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                 storeToClear.clearMetadataAndCache()
                 preloadedContours.clear()
                 finalizingContourPreviews.clear()
-                contourSaveTokens.clear()
+                contourSaveTokens.keys.removeAll { it.first == currentDate }
                 ioExecutor.execute { runCatching { storeToClear.deleteMediaDir() } }
                 cancelGesture()
                 finishing.entries.removeAll { it.value === entry }

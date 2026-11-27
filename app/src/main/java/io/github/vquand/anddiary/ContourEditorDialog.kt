@@ -35,6 +35,7 @@ internal object ContourEditorDialog {
         var previewMode = false
         var selectedLevel: Int? = null // null = Auto nesting elevation
         val strokes = initialDocument.strokes.toMutableList()
+        var committedStrokes = initialDocument.strokes
         var dialogRef: Dialog? = null
 
         val root = LinearLayout(context).apply {
@@ -104,7 +105,7 @@ internal object ContourEditorDialog {
 
         fun currentDocument() = ContourDocument(
             style = selectedStyle,
-            strokes = strokes.toList(),
+            strokes = committedStrokes,
             yawRad = initialDocument.yawRad,
             pitchRad = initialDocument.pitchRad,
         )
@@ -211,6 +212,7 @@ internal object ContourEditorDialog {
             initialDocument = initialDocument,
             onStrokeAdded = { stroke ->
                 strokes.add(stroke)
+                committedStrokes = strokes.toList()
                 updateActionButtons()
                 canvasView.updateState(
                     document = currentDocument(),
@@ -229,6 +231,7 @@ internal object ContourEditorDialog {
             setOnClickListener {
                 if (strokes.isNotEmpty() && !previewMode) {
                     strokes.removeAt(strokes.lastIndex)
+                    committedStrokes = strokes.toList()
                     refreshTopChips()
                 }
             }
@@ -241,6 +244,7 @@ internal object ContourEditorDialog {
             setOnClickListener {
                 if (strokes.isNotEmpty() && !previewMode) {
                     strokes.clear()
+                    committedStrokes = emptyList()
                     refreshTopChips()
                 }
             }
@@ -349,7 +353,7 @@ private class ContourEditorCanvas(
     private var drawLevel: Int? = null
     private var cachedStrokes: List<ContourStroke>? = null
     private var cachedHeightmap: ContourHeightmap? = null
-    private var cachedResolvedStrokes: List<ContourStroke>? = null
+    private var cachedResolvedStrokes: List<ContourStroke> = initialDocument.strokes
     private var cachedResolvedLevels: List<Int> = ContourTerrainEngine.resolveLevels(initialDocument.strokes)
     private var activePointerId: Int = MotionEvent.INVALID_POINTER_ID
     private val activePoints = mutableListOf<Pair<Float, Float>>()
@@ -399,7 +403,7 @@ private class ContourEditorCanvas(
         this.document = document
         this.preview3d = preview3d
         this.drawLevel = drawLevel
-        if (cachedResolvedStrokes != document.strokes) {
+        if (cachedResolvedStrokes !== document.strokes) {
             cachedResolvedStrokes = document.strokes
             cachedResolvedLevels = ContourTerrainEngine.resolveLevels(document.strokes)
         }
