@@ -8,7 +8,7 @@ Diary is for people who want a private handwriting journal on a tablet: daily pa
 
 - Scroll a month calendar from 1900 through 2199. The current month opens in the center, with the neighboring months peeking above and below. **Today** brings the current month back to center.
 - Tap a date to open its page. A day that holds ink, a sticker, a photo, or another attachment shows a small dot. Come back with **Calendar** and the month stays where you left it.
-- Write with a pressure-sensitive **Pen** or a softer **Brush**. Each tool remembers its own ink color and size, and finished strokes keep the color they were drawn with. Eight ink swatches and a custom color are built in.
+- Write with a pressure-sensitive **Pen**, a softer **Brush**, or a customizable third slot backed by the **Brush bank** (Pencil, Chinese ink brush, Calligraphy quill, Airbrush, Charcoal). Each tool remembers its own ink color and size, and finished strokes keep the brush and color they were drawn with. Eight ink swatches and a custom color are built in.
 - Erase with the **Eraser**, or hold the side button on an S Pen to erase while the button is down. **Undo** and **Redo** cover the last 50 changes.
 - Scroll the ruled page with a finger. Turn on **Finger** when you want to draw with a fingertip, which is handy on a phone.
 - Drop in stickers from five packs (capybara, lop rabbit, dogs, fluffy cats, and a classic set: 61 in all). Search by name or a tag such as happy, sleepy, or rain. The artwork is WebP.
@@ -101,6 +101,13 @@ cargo test --locked
 Please keep real diary pages, names, device data, and screenshots out of the repository. Calendar pin ids and sticker ids in `assets/stickers/catalog.json` are part of saved data. [assets/stickers/README.md](assets/stickers/README.md) covers replacing the classic pin artwork.
 
 People working in this tree with a coding agent can start from [AGENTS.md](AGENTS.md).
+
+## Adding a brush
+
+1. Add a `BrushSpec` entry to `BrushBank.all` in `app/src/main/java/io/github/vquand/anddiary/BrushBank.kt` with a unique `id` and the next unused `storageCode` (starting after `20`; never reuse retired codes).
+2. Add a display string in `app/src/main/res/values/strings.xml` and a `ToolIconKind` drawing case in `app/src/main/java/io/github/vquand/anddiary/ToolIcons.kt`.
+3. Drop an optional `stamp.webp` (or `stamp.png`) into `design/brush-bank/<id>/` and run `python3 tools/import_brush_assets.py` to write a lossless WebP with alpha at `assets/brushes/<id>/stamp.webp` (and regenerate star drawables). The app's minSdk is 26, well above API 18 where Android can decode lossless WebP with alpha.
+4. See [docs/ink-format.md](docs/ink-format.md) for how `.ink` stroke records reference brush storage codes.
 
 ## License
 

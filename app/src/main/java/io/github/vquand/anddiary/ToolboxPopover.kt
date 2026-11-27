@@ -2,16 +2,17 @@ package io.github.vquand.anddiary
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.content.res.ColorStateList
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
-import android.graphics.Path
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.LayerDrawable
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
 import android.widget.FrameLayout
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.SeekBar
 import android.widget.TextView
@@ -23,6 +24,7 @@ internal class ToolboxPopover(
     context: Context,
     private val brushes: DiaryBrushes,
     private val onChanged: () -> Unit,
+    private val onOpenBrushBank: () -> Unit = {},
 ) : LinearLayout(context) {
     private val density = resources.displayMetrics.density
     private var palette = DiarySettings.palette(context)
@@ -38,7 +40,21 @@ internal class ToolboxPopover(
         setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
         paint.isFakeBoldText = true
     }
-    private val previewView = StrokePreviewView(context)
+    private val bankSettingsBackground = GradientDrawable().apply {
+        cornerRadius = 8f * density
+    }
+    private val bankSettingsButton = ImageView(context).apply {
+        setImageResource(R.drawable.ic_brush_bank_settings)
+        scaleType = ImageView.ScaleType.FIT_CENTER
+        imageTintList = ColorStateList.valueOf(palette.text)
+        background = bankSettingsBackground
+        setPadding(dp(6), dp(6), dp(6), dp(6))
+        isClickable = true
+        visibility = GONE
+        contentDescription = context.getString(R.string.brush_bank_settings)
+        setOnClickListener { onOpenBrushBank() }
+    }
+    private val previewView = BrushPreviewView(context, brushes.textureStore)
     private val colorSection = LinearLayout(context).apply { orientation = VERTICAL }
     private val hexLabel = TextView(context).apply {
         setTextColor(palette.muted)
@@ -74,13 +90,14 @@ internal class ToolboxPopover(
         isFocusable = false
         setPadding(dp(14), dp(12), dp(14), dp(14))
         elevation = 8f * density
-        applyCardBackground()
+        applyPaletteDrawables()
 
-        // Header: tool title + live stroke/eraser preview
+        // Header: tool title + optional brush bank button + live stroke/eraser preview
         addView(LinearLayout(context).apply {
             orientation = HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             addView(titleView, LayoutParams(0, LayoutParams.WRAP_CONTENT, 1f))
+            addView(bankSettingsButton, LayoutParams(dp(32), dp(32)).apply { marginEnd = dp(6) })
             addView(previewView, LayoutParams(dp(110), dp(34)))
         }, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT))
 
@@ -182,10 +199,15 @@ internal class ToolboxPopover(
         syncFromState()
     }
 
+    fun refresh() {
+        bind(tool)
+    }
+
     fun applyPalette(next: DiaryPalette) {
         palette = next
-        applyCardBackground()
+        applyPaletteDrawables()
         titleView.setTextColor(palette.text)
+        bankSettingsButton.imageTintList = ColorStateList.valueOf(palette.text)
         hexLabel.setTextColor(palette.muted)
         sizeTitle.setTextColor(palette.muted)
         sizeValue.setTextColor(palette.text)
@@ -196,12 +218,14 @@ internal class ToolboxPopover(
         syncFromState()
     }
 
-    private fun applyCardBackground() {
+    private fun applyPaletteDrawables() {
         background = GradientDrawable().apply {
             setColor(palette.paper)
             setStroke(dp(1), palette.rule)
             cornerRadius = 10f * density
         }
+        bankSettingsBackground.setColor(palette.paperSoft)
+        bankSettingsBackground.setStroke(dp(1), palette.rule)
     }
 
     private fun syncFromState() {
@@ -209,10 +233,12 @@ internal class ToolboxPopover(
             when (tool) {
                 DiaryTool.PEN -> R.string.pen
                 DiaryTool.BRUSH -> R.string.brush
+                DiaryTool.BANK -> brushes.bankBrush.nameRes
                 DiaryTool.ERASER -> R.string.eraser
                 DiaryTool.SELECT -> R.string.select
             },
         )
+        bankSettingsButton.visibility = if (tool == DiaryTool.BANK) VISIBLE else GONE
         colorSection.visibility = if (tool == DiaryTool.ERASER) GONE else VISIBLE
         customPanel.visibility = if (tool != DiaryTool.ERASER && customExpanded) VISIBLE else GONE
         sizeTitle.setText(if (tool == DiaryTool.ERASER) R.string.eraser_size else R.string.stroke_size)
@@ -238,7 +264,21 @@ internal class ToolboxPopover(
         sizeBar.progress = (fraction * 100f).roundToInt()
         updatingSliders = false
         rebuildPresets(sizeDp)
-        previewView.invalidate()
+        updatePreview()
+    }
+
+    private fun updatePreview() {
+        if (tool == DiaryTool.ERASER) {
+            previewView.setEraserPreview(brushes.eraserRadiusPx)
+            return
+        }
+        val baseBrush = brushes.brushFor(tool)
+        previewView.setStrokePreview(
+            family = baseBrush.family,
+            color = baseBrush.colorIntArgb,
+            sizePx = baseBrush.size.coerceIn(1.5f * density, 18f * density),
+            epsilon = baseBrush.epsilon,
+        )
     }
 
     private fun updateSwatchSelection() {
@@ -323,7 +363,7 @@ internal class ToolboxPopover(
                 hexLabel.text = String.format(Locale.US, "#%06X", color and 0xffffff)
                 updateHsvTracks()
                 updateSwatchSelection()
-                previewView.invalidate()
+                updatePreview()
                 onChanged()
             }
 
@@ -343,7 +383,7 @@ internal class ToolboxPopover(
                 brushes.setSizeDpFor(tool, snapped)
                 sizeValue.text = formatSize(brushes.sizeDpFor(tool))
                 rebuildPresets(brushes.sizeDpFor(tool))
-                previewView.invalidate()
+                updatePreview()
                 onChanged()
             }
 
@@ -375,51 +415,6 @@ internal class ToolboxPopover(
     }
 
     private fun dp(value: Int) = (value * density).roundToInt()
-
-    private inner class StrokePreviewView(context: Context) : View(context) {
-        private val strokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            style = Paint.Style.STROKE
-            strokeCap = Paint.Cap.ROUND
-            strokeJoin = Paint.Join.ROUND
-        }
-        private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            style = Paint.Style.FILL
-        }
-        private val path = Path()
-
-        override fun onDraw(canvas: Canvas) {
-            super.onDraw(canvas)
-            val cy = height / 2f
-            // Draw preview on a light paper pill so dark inks stay clearly visible in dark theme.
-            fillPaint.color = DiaryPalette.LIGHT.paper
-            canvas.drawRoundRect(0f, 0f, width.toFloat(), height.toFloat(), 6f * density, 6f * density, fillPaint)
-            if (tool == DiaryTool.ERASER) {
-                val radius = (brushes.eraserRadiusPx * 0.55f).coerceIn(4f * density, cy - 3f * density)
-                val cx = width - radius - 8f * density
-                fillPaint.color = DiaryPalette.LIGHT.eraserFill
-                canvas.drawCircle(cx, cy, radius, fillPaint)
-                strokePaint.color = DiaryPalette.LIGHT.muted
-                strokePaint.strokeWidth = 1.5f * density
-                canvas.drawCircle(cx, cy, radius, strokePaint)
-                return
-            }
-
-            val startX = 12f * density
-            val endX = width - 12f * density
-            val amp = 6f * density
-            val strokePx = (brushes.sizeDpFor(tool) * density).coerceIn(1.5f * density, 18f * density)
-            strokePaint.color = brushes.colorFor(tool)
-            strokePaint.strokeWidth = strokePx
-            path.reset()
-            path.moveTo(startX, cy + amp * 0.4f)
-            path.cubicTo(
-                startX + (endX - startX) * 0.33f, cy - amp,
-                startX + (endX - startX) * 0.66f, cy + amp,
-                endX, cy - amp * 0.4f,
-            )
-            canvas.drawPath(path, strokePaint)
-        }
-    }
 
     private inner class SwatchView(
         context: Context,

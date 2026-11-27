@@ -21,6 +21,7 @@ import android.view.inputmethod.EditorInfo
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.TextView
+import androidx.ink.brush.TextureBitmapStore
 import androidx.ink.rendering.android.canvas.CanvasStrokeRenderer
 import androidx.ink.strokes.Stroke
 import java.io.File
@@ -328,6 +329,7 @@ internal object SelectionExporter {
         itemsStore: PaperItemsStore,
         density: Float,
         paperPalette: DiaryPalette,
+        textureStore: TextureBitmapStore = TextureBitmapStore { null },
     ): String {
         val pad = 12f * density
         val crop = RectF(
@@ -379,7 +381,7 @@ internal object SelectionExporter {
             }
 
             if (snapshot.strokes.isNotEmpty()) {
-                val strokeRenderer = CanvasStrokeRenderer.create()
+                val strokeRenderer = CanvasStrokeRenderer.create(textureStore)
                 val identity = Matrix()
                 for (stroke in snapshot.strokes) {
                     strokeRenderer.draw(canvas, stroke, identity)

@@ -37,6 +37,12 @@ internal class ToolChip(
         addView(label)
     }
 
+    fun setBrushDisplay(labelRes: Int, iconKind: ToolIconKind) {
+        label.setText(labelRes)
+        contentDescription = context.getString(labelRes)
+        icon.kind = iconKind
+    }
+
     fun update(
         selected: Boolean,
         indicatorColor: Int,
@@ -113,6 +119,7 @@ internal class SettingsChip(context: Context) : LinearLayout(context) {
         expanded: Boolean,
         palette: DiaryPalette,
         toolbarMode: ToolbarMode,
+        bankIcon: ToolIconKind = ToolIconKind.PENCIL,
     ) {
         val fg = if (expanded) palette.accent else palette.text
         dot.isRing = tool == DiaryTool.ERASER
@@ -120,6 +127,7 @@ internal class SettingsChip(context: Context) : LinearLayout(context) {
         icon.kind = when (tool) {
             DiaryTool.PEN -> ToolIconKind.PEN
             DiaryTool.BRUSH -> ToolIconKind.BRUSH
+            DiaryTool.BANK -> bankIcon
             DiaryTool.ERASER -> ToolIconKind.ERASER
             DiaryTool.SELECT -> ToolIconKind.SELECT
         }

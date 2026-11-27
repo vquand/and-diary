@@ -34,7 +34,8 @@ internal class InkEntry(
             val family = when (record.brushKind) {
                 PEN -> brushes.penFamily
                 SOFT_BRUSH -> brushes.softBrushFamily
-                else -> throw IOException("Unknown diary brush")
+                else -> BrushBank.byStorageCode(record.brushKind)?.let(brushes::familyFor)
+                    ?: throw IOException("Unknown diary brush")
             }
             val brush = Brush.createWithColorIntArgb(family, record.colorArgb, record.size, record.epsilon)
             Stroke(brush, StrokeInputBatch.decode(record.payload))
@@ -51,7 +52,7 @@ internal class InkEntry(
         val records = strokes.map { stroke ->
             val brush = stroke.brush
             RawStrokeRecord(
-                brushKind = if (brush.family == brushes.softBrushFamily) SOFT_BRUSH else PEN,
+                brushKind = brushes.storageCodeFor(brush.family),
                 colorArgb = brush.colorIntArgb,
                 size = brush.size,
                 epsilon = brush.epsilon,
@@ -84,6 +85,9 @@ internal class InkEntry(
         const val PEN = 0
         const val SOFT_BRUSH = 1
 
+        fun isSupportedBrushKind(code: Int): Boolean =
+            code == PEN || code == SOFT_BRUSH || BrushBank.byStorageCode(code) != null
+
         fun decodeRecords(raw: ByteArray): List<RawStrokeRecord> =
             DataInputStream(ByteArrayInputStream(raw)).use { input ->
                 if (input.readInt() != FORMAT) throw IOException("Unsupported diary ink format")
@@ -93,7 +97,7 @@ internal class InkEntry(
                 }
                 List(count) {
                     val brushKind = input.readUnsignedByte()
-                    if (brushKind != PEN && brushKind != SOFT_BRUSH) {
+                    if (!isSupportedBrushKind(brushKind)) {
                         throw IOException("Unknown diary brush")
                     }
                     val colorArgb = input.readInt()

@@ -64,10 +64,12 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
     private var clearDialog: AlertDialog? = null
     private var stickerDialog: Dialog? = null
     private var hanziDialog: Dialog? = null
+    private var brushBankDialog: Dialog? = null
     private var exportDialog: Dialog? = null
 
     private val penButton = ToolChip(context, R.string.pen, DiaryTool.PEN, ToolIconKind.PEN)
     private val brushButton = ToolChip(context, R.string.brush, DiaryTool.BRUSH, ToolIconKind.BRUSH)
+    private val bankButton = ToolChip(context, brushes.bankBrush.nameRes, DiaryTool.BANK, brushes.bankBrush.icon)
     private val eraserButton = ToolChip(context, R.string.eraser, DiaryTool.ERASER, ToolIconKind.ERASER)
     private val selectButton = ActionChip(context, R.string.select, ToolIconKind.SELECT)
     private val settingsChip = SettingsChip(context)
@@ -93,9 +95,12 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
         isClickable = true
         setOnClickListener { hidePopovers() }
     }
-    private val popover = ToolboxPopover(context, brushes) {
-        updateToolbar()
-    }.apply {
+    private val popover = ToolboxPopover(
+        context = context,
+        brushes = brushes,
+        onChanged = { updateToolbar() },
+        onOpenBrushBank = { openBrushBankDialog() },
+    ).apply {
         visibility = GONE
     }
     private val mediaPopover = MediaPickerPopover(context) { kind ->
@@ -160,6 +165,7 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
 
         penButton.setOnClickListener { selectTool(DiaryTool.PEN) }
         brushButton.setOnClickListener { selectTool(DiaryTool.BRUSH) }
+        bankButton.setOnClickListener { selectTool(DiaryTool.BANK) }
         eraserButton.setOnClickListener { selectTool(DiaryTool.ERASER) }
         selectButton.setOnClickListener { selectTool(DiaryTool.SELECT) }
         settingsChip.setOnClickListener { togglePopover(popover) }
@@ -193,6 +199,7 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
 
             addView(penButton, chipParams(marginEndDp = 6))
             addView(brushButton, chipParams(marginEndDp = 6))
+            addView(bankButton, chipParams(marginEndDp = 6))
             addView(eraserButton, chipParams(marginEndDp = 6))
             addView(selectButton, chipParams(marginEndDp = 6))
             addView(settingsChip, chipParams(marginEndDp = 8))
@@ -244,6 +251,7 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
 
         updateToolbar()
         updateHistoryButtons()
+        preloadBrushTexturesAsync()
     }
 
     fun cancelGesture() {
@@ -280,6 +288,7 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
         mediaPlayback.release()
         stickerDialog?.dismiss()
         hanziDialog?.dismiss()
+        brushBankDialog?.dismiss()
         exportDialog?.dismiss()
         clearDialog?.dismiss()
         paper.cancelGesture()
@@ -359,6 +368,8 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
         stickerDialog = null
         hanziDialog?.dismiss()
         hanziDialog = null
+        brushBankDialog?.dismiss()
+        brushBankDialog = null
         exportDialog?.dismiss()
         exportDialog = null
         clearDialog?.dismiss()
@@ -368,6 +379,15 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
     private fun pruneUnusedMediaAsync(store: PaperItemsStore, activeItems: List<PaperItem>) {
         ioExecutor.execute {
             runCatching { store.pruneUnusedMedia(activeItems) }
+        }
+    }
+
+    private fun preloadBrushTexturesAsync() {
+        val store = brushes.textureStore
+        ioExecutor.execute {
+            for (spec in BrushBank.all) {
+                spec.textureId?.let { id -> runCatching { store[id] } }
+            }
         }
     }
 
@@ -414,6 +434,7 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                         itemsStore = targetStore,
                         density = density,
                         paperPalette = DiaryPalette.LIGHT,
+                        textureStore = brushes.textureStore,
                     )
                     post {
                         Toast.makeText(
@@ -466,6 +487,32 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
             show()
         }
         updateToolbar()
+    }
+
+    private fun openBrushBankDialog() {
+        paper.cancelGesture()
+        if (brushBankDialog?.isShowing == true) return
+        val picker = BrushBankPopover(
+            context = context,
+            brushes = brushes,
+            onSelect = {
+                updateToolbar()
+                if (popover.visibility == VISIBLE) {
+                    popover.refresh()
+                }
+            },
+            onClose = { brushBankDialog?.dismiss() },
+        )
+        brushBankDialog = Dialog(context).apply {
+            setContentView(picker, ViewGroup.LayoutParams(picker.preferredDialogWidthPx(), ViewGroup.LayoutParams.WRAP_CONTENT))
+            window?.setBackgroundDrawableResource(android.R.color.transparent)
+            setCanceledOnTouchOutside(true)
+            setOnDismissListener {
+                brushBankDialog = null
+                updateToolbar()
+            }
+            show()
+        }
     }
 
     private fun pickMedia(kind: PaperItemKind) {
@@ -588,6 +635,8 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
         val active = paper.activeTool
         penButton.update(selected = active == DiaryTool.PEN, indicatorColor = brushes.penColor, palette = palette, toolbarMode = toolbarMode)
         brushButton.update(selected = active == DiaryTool.BRUSH, indicatorColor = brushes.brushColor, palette = palette, toolbarMode = toolbarMode)
+        bankButton.setBrushDisplay(brushes.bankBrush.nameRes, brushes.bankBrush.icon)
+        bankButton.update(selected = active == DiaryTool.BANK, indicatorColor = brushes.bankColor, palette = palette, toolbarMode = toolbarMode)
         eraserButton.update(selected = active == DiaryTool.ERASER, indicatorColor = palette.muted, palette = palette, toolbarMode = toolbarMode)
         selectButton.update(active = active == DiaryTool.SELECT, enabled = true, palette = palette, toolbarMode = toolbarMode)
         settingsChip.visibility = if (active == DiaryTool.SELECT) GONE else VISIBLE
@@ -599,6 +648,7 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                 expanded = popover.visibility == VISIBLE,
                 palette = palette,
                 toolbarMode = toolbarMode,
+                bankIcon = brushes.bankBrush.icon,
             )
         }
         stickerButton.update(active = stickerDialog?.isShowing == true, enabled = true, palette = palette, toolbarMode = toolbarMode)
@@ -686,8 +736,10 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
     private inner class Paper : FrameLayout(context) {
         var fingerInk = false
         var activeTool = DiaryTool.PEN
-        private val ink = InProgressStrokesView(context)
-        private val renderer = CanvasStrokeRenderer.create()
+        private val ink = InProgressStrokesView(context).apply {
+            textureBitmapStore = brushes.textureStore
+        }
+        private val renderer = CanvasStrokeRenderer.create(brushes.textureStore)
         private val identity = Matrix()
         private val liveMatrix = Matrix()
         private val viewToPaper = Matrix()
