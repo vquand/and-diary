@@ -1061,9 +1061,14 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
 
                     // Two-finger rotate & scale on any active selection (single sticker/item or lasso area).
                     if (!first && event.pointerCount == 2) {
+                        fun isNonFingerPointer(pointerId: Int): Boolean {
+                            val idx = event.findPointerIndex(pointerId)
+                            return idx == -1 || event.getToolType(idx) != MotionEvent.TOOL_TYPE_FINGER
+                        }
                         val penGestureActive = drawing != null || erasing != null ||
-                            lassoing != null || areaDrag != null ||
-                            (itemDrag != null && event.getToolType(event.findPointerIndex(itemDrag!!.pointerId).coerceAtLeast(0)) != MotionEvent.TOOL_TYPE_FINGER)
+                            (itemDrag?.let { isNonFingerPointer(it.pointerId) } == true) ||
+                            (areaDrag?.let { isNonFingerPointer(it.pointerId) } == true) ||
+                            (lassoing?.let { it.points.size > 1 || isNonFingerPointer(it.pointerId) } == true)
                         val toolTypes = intArrayOf(event.getToolType(0), event.getToolType(1))
                         if (LassoGeometry.canStartTwoFingerTransform(toolTypes, hasSelection, stylusEraser, penGestureActive)) {
                             startTwoFingerTransform(event)
@@ -1292,7 +1297,14 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                         areaDrag = null
                         val activeTransform = liveTransform
                         liveTransform = null
-                        if (!canceled && drag.moved && activeTransform != null) {
+                        if (!canceled && drag.moved && activeTransform != null &&
+                            !LassoGeometry.isIdentityTransform(
+                                activeTransform.translateX,
+                                activeTransform.translateY,
+                                activeTransform.scale,
+                                activeTransform.rotationDeg,
+                            )
+                        ) {
                             commitSelectionTransform(activeTransform, drag.preStrokes, drag.preItems)
                         }
                         invalidate()
@@ -1481,28 +1493,25 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
             preStrokes: List<Stroke>,
             preItems: List<PaperItem>,
         ) {
-            val matrix = Matrix()
-            transform.fillMatrix(matrix)
             val pt = FloatArray(2)
             val minW = 44f * density
             val maxItemW = (width - 16f * density).coerceAtLeast(minW)
+
+            // Clamp transform.scale once for the whole selection before building the matrix,
+            // so item centers, item sizes, stroke points, and stroke widths share one scale.
+            val resizableWidths = preItems
+                .filter { it.id in selectedItemIds && it.kind != PaperItemKind.AUDIO }
+                .map { it.width }
+            val clampedScale = LassoGeometry.clampGroupScale(transform.scale, resizableWidths, minW, maxItemW)
+
+            val matrix = Matrix()
+            transform.copy(scale = clampedScale).fillMatrix(matrix)
 
             // First transform selected items (capping width to sheet) and measure overall group bounds.
             var groupMinX = Float.POSITIVE_INFINITY
             var groupMinY = Float.POSITIVE_INFINITY
             var groupMaxX = Float.NEGATIVE_INFINITY
             var groupMaxY = Float.NEGATIVE_INFINITY
-
-            // Clamp transform.scale once for the whole selection based on item limits,
-            // so all members (strokes + items) use the same effective scale.
-            var clampedScale = transform.scale
-            for (item in preItems) {
-                if (item.id !in selectedItemIds) continue
-                if (item.kind == PaperItemKind.AUDIO) continue
-                val lo = minW / item.width
-                val hi = maxItemW / item.width
-                clampedScale = clampedScale.coerceIn(lo.coerceAtMost(1f), hi.coerceAtLeast(1f))
-            }
 
             val prelimItems = preItems.map { item ->
                 if (item.id !in selectedItemIds) return@map item

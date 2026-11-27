@@ -462,4 +462,16 @@ class DiaryCoreTests {
         }
         assertEquals(0.5f, LassoGeometry.wrapOrientation(twoPi + 0.5f), 0.001f)
     }
+
+    @Test
+    fun groupScaleClampCapsMixedSelectionAndSkipsZeroWidths() {
+        // 300px wide item cannot grow past 600px (2x); 100px item could grow 6x, so group caps at 2x.
+        assertEquals(2f, LassoGeometry.clampGroupScale(4f, listOf(100f, 300f), minWidth = 44f, maxWidth = 600f), 0.001f)
+        // 88px item cannot shrink below 44px (0.5x).
+        assertEquals(0.5f, LassoGeometry.clampGroupScale(0.25f, listOf(88f, 300f), minWidth = 44f, maxWidth = 600f), 0.001f)
+        // Zero/negative widths are skipped safely (no division by zero / Infinity).
+        assertEquals(2f, LassoGeometry.clampGroupScale(3f, listOf(0f, -10f, 300f), minWidth = 44f, maxWidth = 600f), 0.001f)
+        // Strokes-only selection (no resizable items) preserves the requested scale.
+        assertEquals(3.5f, LassoGeometry.clampGroupScale(3.5f, emptyList(), minWidth = 44f, maxWidth = 600f), 0.001f)
+    }
 }

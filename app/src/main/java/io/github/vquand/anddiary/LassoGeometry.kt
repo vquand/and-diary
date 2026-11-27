@@ -301,6 +301,27 @@ internal object LassoGeometry {
     }
 
     /**
+     * Clamps a group [scale] so every non-empty resizable item width in [itemWidths]
+     * stays within [[minWidth], [maxWidth]], keeping strokes and items on one shared scale.
+     */
+    fun clampGroupScale(
+        scale: Float,
+        itemWidths: List<Float>,
+        minWidth: Float,
+        maxWidth: Float,
+    ): Float {
+        var clamped = scale
+        val hiMax = maxWidth.coerceAtLeast(minWidth)
+        for (w in itemWidths) {
+            if (w <= 0f) continue
+            val lo = (minWidth / w).coerceAtMost(1f)
+            val hi = (hiMax / w).coerceAtLeast(1f)
+            clamped = clamped.coerceIn(lo, hi)
+        }
+        return clamped
+    }
+
+    /**
      * Computes a shared (shiftX, shiftY) to keep a group bounding box [minX..maxX, minY..maxY]
      * inside [0..sheetWidth, 0..sheetHeight] without splitting strokes and items apart.
      */
