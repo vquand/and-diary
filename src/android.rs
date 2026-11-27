@@ -172,6 +172,7 @@ impl Diary {
             SettingsAction::SetTheme(theme) => self.settings.theme = theme,
             SettingsAction::SetToolbar(toolbar) => self.settings.toolbar = toolbar,
             SettingsAction::SetDateFormat(date_format) => self.settings.date_format = date_format,
+            SettingsAction::TogglePlugin(plugin) => self.settings.toggle_plugin(plugin),
         }
         if let Err(error) = settings::save(&self.settings_path, self.settings) {
             eprintln!("could not save settings: {error}");
@@ -773,11 +774,12 @@ fn apply_android_settings(settings: AppSettings) {
             env.call_static_method(
                 &class,
                 jni_str!("applySettings"),
-                jni_sig!("(Landroid/app/Activity;II[I[I)V"),
+                jni_sig!("(Landroid/app/Activity;III[I[I)V"),
                 &[
                     JValue::Object(&activity),
                     JValue::Int(settings.theme.code()),
                     JValue::Int(settings.toolbar.code()),
+                    JValue::Int(settings.plugins_mask()),
                     JValue::Object(&light),
                     JValue::Object(&dark),
                 ],

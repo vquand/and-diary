@@ -206,11 +206,78 @@ impl DateFormat {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DiaryPlugin {
+    Hanzi,
+    Contour3d,
+}
+
+impl DiaryPlugin {
+    #[cfg(target_os = "android")]
+    pub const ALL: [Self; 2] = [Self::Hanzi, Self::Contour3d];
+
+    pub const BIT_HANZI: i32 = 1 << 0;
+    pub const BIT_CONTOUR_3D: i32 = 1 << 1;
+
+    #[cfg(target_os = "android")]
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Hanzi => "plugin_hanzi",
+            Self::Contour3d => "plugin_contour",
+        }
+    }
+
+    #[cfg(target_os = "android")]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Hanzi => "Chinese word everyday",
+            Self::Contour3d => "Contour line 3D",
+        }
+    }
+
+    #[cfg(target_os = "android")]
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::Hanzi => "Load daily Hanzi stroke-practice cards in the day toolbox",
+            Self::Contour3d => "Draw 2D contour maps and render them as smooth or block 3D terrain",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct AppSettings {
     pub theme: ThemeMode,
     pub toolbar: ToolbarMode,
     pub date_format: DateFormat,
+    pub plugin_hanzi: bool,
+    pub plugin_contour: bool,
+}
+
+impl AppSettings {
+    pub fn is_plugin_enabled(self, plugin: DiaryPlugin) -> bool {
+        match plugin {
+            DiaryPlugin::Hanzi => self.plugin_hanzi,
+            DiaryPlugin::Contour3d => self.plugin_contour,
+        }
+    }
+
+    pub fn toggle_plugin(&mut self, plugin: DiaryPlugin) {
+        match plugin {
+            DiaryPlugin::Hanzi => self.plugin_hanzi = !self.plugin_hanzi,
+            DiaryPlugin::Contour3d => self.plugin_contour = !self.plugin_contour,
+        }
+    }
+
+    pub fn plugins_mask(self) -> i32 {
+        let mut mask = 0;
+        if self.plugin_hanzi {
+            mask |= DiaryPlugin::BIT_HANZI;
+        }
+        if self.plugin_contour {
+            mask |= DiaryPlugin::BIT_CONTOUR_3D;
+        }
+        mask
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -297,10 +364,28 @@ pub fn load(path: &Path) -> AppSettings {
                     settings.date_format = date_format;
                 }
             }
+            "plugin_hanzi" => {
+                if let Some(enabled) = parse_bool(value) {
+                    settings.plugin_hanzi = enabled;
+                }
+            }
+            "plugin_contour" => {
+                if let Some(enabled) = parse_bool(value) {
+                    settings.plugin_contour = enabled;
+                }
+            }
             _ => {}
         }
     }
     settings
+}
+
+fn parse_bool(value: &str) -> Option<bool> {
+    match value.trim() {
+        "true" | "1" => Some(true),
+        "false" | "0" => Some(false),
+        _ => None,
+    }
 }
 
 pub fn save(path: &Path, settings: AppSettings) -> io::Result<()> {
@@ -313,6 +398,8 @@ pub fn save(path: &Path, settings: AppSettings) -> io::Result<()> {
         writeln!(file, "theme={}", settings.theme.as_str())?;
         writeln!(file, "toolbar={}", settings.toolbar.as_str())?;
         writeln!(file, "date_format={}", settings.date_format.as_str())?;
+        writeln!(file, "plugin_hanzi={}", settings.plugin_hanzi)?;
+        writeln!(file, "plugin_contour={}", settings.plugin_contour)?;
         file.sync_all()?;
         fs::rename(&staged, path)
     })();
@@ -337,6 +424,8 @@ mod tests {
             theme: ThemeMode::Dark,
             toolbar: ToolbarMode::IconAndLabel,
             date_format: DateFormat::Iso,
+            plugin_hanzi: true,
+            plugin_contour: false,
         };
         save(&path, updated).unwrap();
         assert_eq!(load(&path), updated);
@@ -345,11 +434,34 @@ mod tests {
             theme: ThemeMode::Light,
             toolbar: ToolbarMode::LabelOnly,
             date_format: DateFormat::Cjk,
+            plugin_hanzi: false,
+            plugin_contour: true,
         };
         save(&path, updated).unwrap();
         assert_eq!(load(&path), updated);
 
         fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn toggles_plugins_and_encodes_bitmask() {
+        let mut settings = AppSettings::default();
+        assert!(!settings.is_plugin_enabled(DiaryPlugin::Hanzi));
+        assert!(!settings.is_plugin_enabled(DiaryPlugin::Contour3d));
+        assert_eq!(settings.plugins_mask(), 0);
+
+        settings.toggle_plugin(DiaryPlugin::Hanzi);
+        assert!(settings.is_plugin_enabled(DiaryPlugin::Hanzi));
+        assert_eq!(settings.plugins_mask(), DiaryPlugin::BIT_HANZI);
+
+        settings.toggle_plugin(DiaryPlugin::Contour3d);
+        assert_eq!(
+            settings.plugins_mask(),
+            DiaryPlugin::BIT_HANZI | DiaryPlugin::BIT_CONTOUR_3D
+        );
+
+        settings.toggle_plugin(DiaryPlugin::Hanzi);
+        assert_eq!(settings.plugins_mask(), DiaryPlugin::BIT_CONTOUR_3D);
     }
 
     #[test]

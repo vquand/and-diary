@@ -23,6 +23,11 @@ internal enum class ToolbarMode(val code: Int) {
     }
 }
 
+internal enum class DiaryPlugin(val bit: Int) {
+    HANZI(1 shl 0),
+    CONTOUR_3D(1 shl 1),
+}
+
 internal data class DiaryPalette(
     val isDark: Boolean,
     val paper: Int,
@@ -105,6 +110,7 @@ internal object DiarySettings {
     private const val PREFS_NAME = "diary_app_settings"
     private const val KEY_THEME = "theme_mode"
     private const val KEY_TOOLBAR = "toolbar_mode"
+    private const val KEY_PLUGINS = "plugins_mask"
 
     fun updatePalettes(lightCore: IntArray, darkCore: IntArray) {
         if (lightCore.size >= 7) {
@@ -143,13 +149,25 @@ internal object DiarySettings {
         return ToolbarMode.fromCode(prefs.getInt(KEY_TOOLBAR, ToolbarMode.ICON_ONLY.code))
     }
 
-    fun save(context: Context, themeCode: Int, toolbarCode: Int) {
+    fun pluginsMask(context: Context): Int {
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        return prefs.getInt(KEY_PLUGINS, 0)
+    }
+
+    fun isPluginEnabled(context: Context, plugin: DiaryPlugin): Boolean =
+        isPluginEnabled(pluginsMask(context), plugin)
+
+    fun isPluginEnabled(mask: Int, plugin: DiaryPlugin): Boolean =
+        (mask and plugin.bit) != 0
+
+    fun save(context: Context, themeCode: Int, toolbarCode: Int, pluginsMask: Int) {
         val theme = ThemeMode.fromCode(themeCode)
         val toolbar = ToolbarMode.fromCode(toolbarCode)
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .edit()
             .putInt(KEY_THEME, theme.code)
             .putInt(KEY_TOOLBAR, toolbar.code)
+            .putInt(KEY_PLUGINS, pluginsMask)
             .apply()
     }
 

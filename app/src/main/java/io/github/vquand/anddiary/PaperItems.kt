@@ -32,6 +32,7 @@ internal enum class PaperItemKind(val wire: String) {
     VIDEO("video"),
     AUDIO("audio"),
     HANZI("hanzi"),
+    CONTOUR("contour"),
     ;
 
     companion object {
@@ -219,6 +220,68 @@ internal class PaperItemsStore(private val context: Context, val date: LocalDate
         )
     }
 
+    fun createContour(
+        document: ContourDocument,
+        centerX: Float,
+        centerY: Float,
+        maxWidth: Float,
+        density: Float,
+    ): PaperItem {
+        val filename = writeContourFile(document)
+        val width = minOf(maxWidth, 260f * density).coerceAtLeast(180f * density)
+        val height = width * 0.75f
+        return PaperItem(
+            id = UUID.randomUUID().toString(),
+            kind = PaperItemKind.CONTOUR,
+            ref = filename,
+            label = document.style.wire,
+            durationMs = document.strokes.size.toLong(),
+            x = (centerX - width / 2f).coerceAtLeast(8f * density),
+            y = (centerY - height / 2f).coerceAtLeast(8f * density),
+            width = width,
+            height = height,
+        )
+    }
+
+    fun updateContour(existing: PaperItem, document: ContourDocument): PaperItem {
+        val filename = writeContourFile(document)
+        return existing.copy(
+            ref = filename,
+            label = document.style.wire,
+            durationMs = document.strokes.size.toLong(),
+        )
+    }
+
+    fun readContour(item: PaperItem): ContourDocument? {
+        val file = mediaFile(item)
+        if (!file.exists()) return null
+        return runCatching {
+            ContourDocument.fromJson(file.readText(Charsets.UTF_8))
+        }.getOrNull()
+    }
+
+    private fun writeContourFile(document: ContourDocument): String {
+        val filename = "${UUID.randomUUID()}.contour.json"
+        val destination = File(mediaDir, filename)
+        mediaDir.mkdirs()
+        synchronized(pendingImports) {
+            pendingImports.add(filename)
+        }
+        val atomic = AtomicFile(destination)
+        val payload = document.toJson().toByteArray(Charsets.UTF_8)
+        val stream = atomic.startWrite()
+        try {
+            stream.write(payload)
+            stream.flush()
+            atomic.finishWrite(stream)
+        } catch (error: Exception) {
+            atomic.failWrite(stream)
+            clearPendingImport(filename)
+            throw error
+        }
+        return filename
+    }
+
     fun importMedia(
         uri: Uri,
         kind: PaperItemKind,
@@ -251,6 +314,7 @@ internal class PaperItemsStore(private val context: Context, val date: LocalDate
             PaperItemKind.AUDIO -> "Audio"
             PaperItemKind.STICKER -> "Sticker"
             PaperItemKind.HANZI -> "Hanzi"
+            PaperItemKind.CONTOUR -> "Contour"
         }
 
         var durationMs = 0L
@@ -307,7 +371,7 @@ internal class PaperItemsStore(private val context: Context, val date: LocalDate
                 targetHeight = 58f * density
             }
 
-            PaperItemKind.STICKER, PaperItemKind.HANZI -> {
+            PaperItemKind.STICKER, PaperItemKind.HANZI, PaperItemKind.CONTOUR -> {
                 targetWidth = 76f * density
                 targetHeight = 76f * density
             }
@@ -329,6 +393,12 @@ internal class PaperItemsStore(private val context: Context, val date: LocalDate
             clearPendingImport(filename)
             throw error
         }
+    }
+
+    fun cacheBitmap(item: PaperItem, bitmap: Bitmap) {
+        val key = "${item.kind.wire}:${item.ref}"
+        mediaBitmaps.put(key, bitmap)
+        synchronized(failedMedia) { failedMedia.remove(key) }
     }
 
     fun cachedBitmap(item: PaperItem): Bitmap? {
@@ -356,6 +426,7 @@ internal class PaperItemsStore(private val context: Context, val date: LocalDate
         val decoded = when (item.kind) {
             PaperItemKind.PHOTO -> decodeSampledFile(mediaFile(item), 1024)
             PaperItemKind.VIDEO -> decodeVideoFrame(mediaFile(item), 640)
+            PaperItemKind.CONTOUR -> readContour(item)?.let { Contour3DRenderer.render(it, 800, 600) }
             else -> null
         }
         if (decoded != null) {
@@ -683,7 +754,12 @@ internal class PaperItemsStore(private val context: Context, val date: LocalDate
         ) {
             if (!mediaDir.isDirectory) return
             val keep = activeItems
-                .filter { it.kind == PaperItemKind.PHOTO || it.kind == PaperItemKind.VIDEO || it.kind == PaperItemKind.AUDIO }
+                .filter {
+                    it.kind == PaperItemKind.PHOTO ||
+                        it.kind == PaperItemKind.VIDEO ||
+                        it.kind == PaperItemKind.AUDIO ||
+                        it.kind == PaperItemKind.CONTOUR
+                }
                 .mapTo(mutableSetOf()) { it.ref }
             keep.addAll(protectedRefs)
             mediaDir.listFiles()?.forEach { file ->

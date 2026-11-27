@@ -1,5 +1,6 @@
 package io.github.vquand.anddiary
 
+import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.DashPathEffect
 import android.graphics.Paint
@@ -79,6 +80,7 @@ internal class PaperItemRenderer(
         item: PaperItem,
         itemsStore: PaperItemsStore,
         playingAudioId: String?,
+        overrideBitmap: Bitmap? = null,
         requestBitmap: (PaperItem, PaperItemsStore) -> Unit,
     ) {
         val rotated = item.rotation != 0f
@@ -183,6 +185,18 @@ internal class PaperItemRenderer(
             }
 
             PaperItemKind.HANZI -> drawHanziCard(canvas, item, corner, itemsStore)
+
+            PaperItemKind.CONTOUR -> {
+                val bmp = overrideBitmap ?: itemsStore.cachedBitmap(item)
+                if (bmp != null) {
+                    canvas.drawBitmap(bmp, null, rect, null)
+                } else {
+                    if (!itemsStore.hasBitmapEntry(item)) requestBitmap(item, itemsStore)
+                    cardFill.color = paperPalette.wash
+                    canvas.drawRoundRect(rect, corner, corner, cardFill)
+                    canvas.drawRoundRect(rect, corner, corner, cardStroke)
+                }
+            }
         }
         if (rotated) {
             canvas.restoreToCount(saveCount)
@@ -294,7 +308,7 @@ internal class PaperItemRenderer(
         }
     }
 
-    fun drawSelectionHandles(canvas: Canvas, item: PaperItem) {
+    fun drawSelectionHandles(canvas: Canvas, item: PaperItem, showCornerHandles: Boolean = true) {
         val rotated = item.rotation != 0f
         val saveCount = if (rotated) {
             canvas.save().also {
@@ -306,7 +320,14 @@ internal class PaperItemRenderer(
         val pad = 4f * density
         rect.set(item.x - pad, item.y - pad, item.x + item.width + pad, item.y + item.height + pad)
         canvas.drawRoundRect(rect, 6f * density, 6f * density, selectStroke)
-        drawCornerHandles(canvas, rect, allowResize = item.kind != PaperItemKind.AUDIO)
+        if (showCornerHandles) {
+            drawCornerHandles(
+                canvas,
+                rect,
+                allowResize = item.kind != PaperItemKind.AUDIO,
+                allowEdit = item.kind == PaperItemKind.CONTOUR,
+            )
+        }
         if (rotated) {
             canvas.restoreToCount(saveCount)
         }
@@ -320,8 +341,14 @@ internal class PaperItemRenderer(
         drawCornerHandles(canvas, rect, allowResize = allowResize)
     }
 
-    private fun drawCornerHandles(canvas: Canvas, box: RectF, allowResize: Boolean) {
+    private fun drawCornerHandles(canvas: Canvas, box: RectF, allowResize: Boolean, allowEdit: Boolean = false) {
         val handleR = 12f * density
+        if (allowEdit) {
+            badgeFill.color = paperPalette.text
+            canvas.drawCircle(box.left, box.top, handleR, badgeFill)
+            drawGearIcon(canvas, box.left, box.top)
+        }
+
         badgeFill.color = paperPalette.danger
         canvas.drawCircle(box.right, box.top, handleR, badgeFill)
         val baseline = box.top - (badgeText.descent() + badgeText.ascent()) / 2f
@@ -334,6 +361,38 @@ internal class PaperItemRenderer(
             canvas.drawCircle(box.right, box.bottom, handleR - 2.5f * density, cardStroke)
             cardStroke.color = paperPalette.rule
         }
+    }
+
+    private fun drawGearIcon(canvas: Canvas, cx: Float, cy: Float) {
+        val prevColor = cardStroke.color
+        val prevWidth = cardStroke.strokeWidth
+        val prevCap = cardStroke.strokeCap
+        cardStroke.color = paperPalette.paper
+        cardStroke.strokeCap = Paint.Cap.ROUND
+
+        val ringR = 3.8f * density
+        val toothInner = 4.2f * density
+        val toothOuter = 6.3f * density
+        cardStroke.strokeWidth = 1.6f * density
+        canvas.drawCircle(cx, cy, ringR, cardStroke)
+
+        cardStroke.strokeWidth = 1.8f * density
+        for (i in 0 until 8) {
+            val angle = i * (Math.PI / 4.0)
+            val cosA = kotlin.math.cos(angle).toFloat()
+            val sinA = kotlin.math.sin(angle).toFloat()
+            canvas.drawLine(
+                cx + cosA * toothInner,
+                cy + sinA * toothInner,
+                cx + cosA * toothOuter,
+                cy + sinA * toothOuter,
+                cardStroke,
+            )
+        }
+
+        cardStroke.color = prevColor
+        cardStroke.strokeWidth = prevWidth
+        cardStroke.strokeCap = prevCap
     }
 
     fun drawLassoPath(canvas: Canvas, points: List<Pair<Float, Float>>) {
