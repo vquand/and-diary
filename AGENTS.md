@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Notes for a coding agent working in this repository. Read this before changing code, docs, or screenshots. The human-facing overview is [README.md](README.md). The longer design notes in [PLAN.md](PLAN.md) describe intended work that is only partly built. Confirm a behavior in the source before you document it or build on it.
+Notes for a coding agent working in this repository. Read this before changing code or docs. The human-facing overview is [README.md](README.md). The longer design notes in [PLAN.md](PLAN.md) describe intended work that is only partly built. Confirm a behavior in the source before you document it or build on it.
 
 ## What this project is
 
@@ -134,18 +134,11 @@ Debug APK: `app/build/outputs/apk/debug/app-debug.apk`.
 - Prefer the existing atomic write pattern for anything stored in `filesDir`.
 - Pin ids, sticker ids, the ink magic number, and the items JSON keys are on-disk formats. Bump them only with a compatible reader.
 - `Cargo.lock` is committed. Gradle invokes cargo with `--locked`.
-- Do not commit `target/`, `app/build/`, `.gradle/`, or `local.properties`.
+- Do not commit `target/`, `app/build/`, `.gradle/`, `local.properties`, or `docs/screenshots/`.
 
-## Screenshots and personal data
+## Personal data
 
-`docs/screenshots/` is demo material for the README. The writing in those images is invented. The sticker and the 永 card are bundled assets. If you replace a screenshot:
-
-- Use a tablet-sized device or emulator and the real app.
-- Use clearly fake text only. No real names, emails, accounts, diary entries, photos of people, or device identifiers (serials, advertising ids, account names in the status bar).
-- Crop system chrome if it shows anything identifying.
-- Keep paths relative from `README.md`.
-
-Do not copy a device's `files/entries` or `files/media` into the repo.
+Do not commit screenshots, or a device's `files/entries` or `files/media`. `docs/screenshots/` is gitignored.
 
 ## Safe changes
 

@@ -20,26 +20,6 @@ Diary is for people who want a private handwriting journal on a tablet: daily pa
 
 The calendar uses serif month titles, a brushed underline, and a hand-drawn grid. The writing page stays warm ivory with faint horizontal rules in both themes. The bars around it follow the theme.
 
-## Screenshots
-
-These are captures from a tablet-sized emulator. The sentences are made-up demo writing, and the sticker and practice card are artwork shipped with the app.
-
-![November calendar. Days with writing show a dot, today is circled, and a rain pin sits on a chosen date.](docs/screenshots/calendar.png)
-
-*The month view. Dots mark days you have filled in. A long-press pins a date.*
-
-![A ruled diary page with sample handwriting, a tea sticker, and a practice card for the character 永.](docs/screenshots/writing.png)
-
-*A day page: pen, brush, stickers, and a character card on the same sheet.*
-
-![Sticker picker on the All tab, with capybara stickers first, search, and mood tags.](docs/screenshots/stickers.png)
-
-*Stickers can be searched and filtered by pack.*
-
-![Settings for theme and the day toolbox, with Auto and Icon only selected.](docs/screenshots/settings.png)
-
-*Theme and toolbar settings. Date format sits further down the same page.*
-
 ## Install
 
 This repository does not publish release APKs. Build the debug app and install that.
@@ -117,7 +97,7 @@ cargo test --locked
 ./gradlew :app:testDebugUnitTest :app:assembleDebug :app:lintDebug
 ```
 
-Please keep real diary pages, names, and device data out of the repository. Screenshots belong in `docs/screenshots/` and should use made-up writing only. Calendar pin ids and sticker ids in `assets/stickers/catalog.json` are part of saved data. [assets/stickers/README.md](assets/stickers/README.md) covers replacing the classic pin artwork.
+Please keep real diary pages, names, device data, and screenshots out of the repository. Calendar pin ids and sticker ids in `assets/stickers/catalog.json` are part of saved data. [assets/stickers/README.md](assets/stickers/README.md) covers replacing the classic pin artwork.
 
 People working in this tree with a coding agent can start from [AGENTS.md](AGENTS.md).
 
