@@ -114,15 +114,17 @@ class DiaryCoreTests {
                 ),
             )
 
-            PaperItemsStore.pruneUnusedMediaInDir(dir, activeItems, protectedRefs = setOf("inflight.mp4"))
+            val state = DayState.of(java.time.LocalDate.of(2026, 11, 28))
+            MediaPrune.prune(state, dir, { activeItems }, retained = setOf("inflight.mp4"))
             assertTrue(keepActive.exists())
             assertTrue(keepPending.exists())
             assertFalse(orphan.exists())
 
             // Once no items or pending refs remain, the directory itself is removed.
-            PaperItemsStore.pruneUnusedMediaInDir(dir, emptyList())
+            MediaPrune.prune(state, dir, { emptyList() })
             assertFalse(dir.exists())
         } finally {
+            DayState.resetForTests()
             dir.deleteRecursively()
         }
     }
@@ -762,10 +764,11 @@ class DiaryCoreTests {
             val decoded = PaperItemsStore.decodeItemsJson(PaperItemsStore.encodeItemsJson(listOf(item)))
             assertEquals(listOf(item), decoded)
 
-            PaperItemsStore.pruneUnusedMediaInDir(dir, listOf(item))
+            MediaPrune.prune(DayState.of(java.time.LocalDate.of(2026, 11, 28)), dir, { listOf(item) })
             assertTrue(activeFile.exists())
             assertFalse(oldRevision.exists())
         } finally {
+            DayState.resetForTests()
             dir.deleteRecursively()
         }
     }
@@ -1010,5 +1013,21 @@ class DiaryCoreTests {
             minTop = Float.NEGATIVE_INFINITY,
         )
         assertTrue(liftedRotated.bottom < boxTopScrolled - 12f * density)
+    }
+
+    @Test
+    fun scrubberScansOnlyCanonicalCommittedEntryNames() {
+        val days = DayScrubberPill.scanSavedDayNames(
+            arrayOf(
+                "2024-02-29.ink",
+                "2026-11-28.items",
+                "2026-11-28.ink.new",
+                "2026-11-28.items.bak",
+                "2025-02-29.ink",
+                "2024-2-9.ink",
+                "notes.txt",
+            ),
+        )
+        assertEquals(setOf("2024-02-29", "2026-11-28"), days)
     }
 }

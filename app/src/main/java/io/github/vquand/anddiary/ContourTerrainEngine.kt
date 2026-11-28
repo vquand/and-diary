@@ -180,23 +180,6 @@ internal object ContourTerrainEngine {
         return abs(sum * 0.5).toFloat()
     }
 
-    fun pointInPolygon(x: Float, y: Float, polygon: List<Pair<Float, Float>>): Boolean {
-        if (polygon.size < 3) return false
-        var inside = false
-        var j = polygon.lastIndex
-        for (i in polygon.indices) {
-            val xi = polygon[i].first
-            val yi = polygon[i].second
-            val xj = polygon[j].first
-            val yj = polygon[j].second
-            val intersects = ((yi > y) != (yj > y)) &&
-                (x < (xj - xi) * (y - yi) / ((yj - yi).takeIf { it != 0f } ?: 1e-6f) + xi)
-            if (intersects) inside = !inside
-            j = i
-        }
-        return inside
-    }
-
     /**
      * Resolves integer elevation levels for every stroke.
      * Explicit levels are preserved; auto strokes receive `1 + count(enclosing closed loops)`.
@@ -218,11 +201,11 @@ internal object ContourTerrainEngine {
                     if (i == j || !closed[j]) continue
                     if (closed[i] && areas[j] <= areas[i] * 1.02f) continue
                     val inside = if (closed[i] || pts.size < 2) {
-                        pointInPolygon(mid.first, mid.second, strokes[j].points)
+                        LassoGeometry.pointInPolygon(mid.first, mid.second, strokes[j].points)
                     } else {
-                        pointInPolygon(pts.first().first, pts.first().second, strokes[j].points) &&
-                            pointInPolygon(mid.first, mid.second, strokes[j].points) &&
-                            pointInPolygon(pts.last().first, pts.last().second, strokes[j].points)
+                        LassoGeometry.pointInPolygon(pts.first().first, pts.first().second, strokes[j].points) &&
+                            LassoGeometry.pointInPolygon(mid.first, mid.second, strokes[j].points) &&
+                            LassoGeometry.pointInPolygon(pts.last().first, pts.last().second, strokes[j].points)
                     }
                     if (inside) {
                         depth++
@@ -432,7 +415,7 @@ internal object ContourTerrainEngine {
                 if (i == j || !closed[j]) continue
                 if (areas[j] >= areas[i]) continue
                 val pt = representativePoint(strokes[j].points)
-                if (pointInPolygon(pt.first, pt.second, strokes[i].points)) {
+                if (LassoGeometry.pointInPolygon(pt.first, pt.second, strokes[i].points)) {
                     hasInnerLoop = true
                     break
                 }
@@ -452,7 +435,7 @@ internal object ContourTerrainEngine {
                     val idx = gy * cols + gx
                     if (fixed[idx]) continue
                     val nx = gx.toFloat() / (cols - 1).toFloat()
-                    if (pointInPolygon(nx, ny, poly)) {
+                    if (LassoGeometry.pointInPolygon(nx, ny, poly)) {
                         insideMask[idx] = true
                         if (gx < minGx) minGx = gx
                         if (gx > maxGx) maxGx = gx

@@ -167,10 +167,7 @@ internal class PaperItemsStore(private val context: Context, val date: LocalDate
         }
     }
 
-    fun clearMetadataAndCache() {
-        state.lock.withLock {
-            itemsFile.delete()
-        }
+    fun clearCache() {
         val prefix = "$date/"
         for (key in mediaBitmaps.snapshot().keys) {
             if (key.startsWith(prefix)) {
@@ -772,19 +769,6 @@ internal class PaperItemsStore(private val context: Context, val date: LocalDate
                 cachedCatalog = parsed
                 return parsed
             }
-        }
-
-        fun pruneUnusedMediaInDir(
-            mediaDir: File,
-            activeItems: List<PaperItem>,
-            protectedRefs: Set<String> = emptySet(),
-        ) {
-            MediaPrune.prune(
-                state = DayState.of(LocalDate.MIN),
-                mediaDir = mediaDir,
-                readItems = { activeItems },
-                retained = protectedRefs,
-            )
         }
 
         fun formatDuration(ms: Long): String {

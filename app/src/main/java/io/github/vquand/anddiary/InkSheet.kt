@@ -54,37 +54,6 @@ import kotlin.math.atan2
 import kotlin.math.hypot
 import kotlin.math.roundToInt
 
-internal object BackgroundItemSaveLogic {
-    fun isSaveStillValid(
-        startClearGen: Int,
-        currentClearGen: Int,
-        expectedToken: Long? = null,
-        activeToken: Long? = null,
-    ): Boolean =
-        startClearGen == currentClearGen &&
-            (expectedToken == null || activeToken == expectedToken)
-
-    fun mergeItemIntoList(
-        existing: List<PaperItem>,
-        existingItemId: String?,
-        newItem: PaperItem,
-    ): List<PaperItem>? = if (existingItemId != null) {
-        if (existing.none { it.id == existingItemId }) {
-            null
-        } else {
-            existing.map { current ->
-                if (current.id == existingItemId) {
-                    current.copy(ref = newItem.ref, label = newItem.label, durationMs = newItem.durationMs)
-                } else {
-                    current
-                }
-            }
-        }
-    } else {
-        existing + newItem
-    }
-}
-
 @SuppressLint("ViewConstructor") // The GPUI host supplies the selected date programmatically.
 class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
     private val density = resources.displayMetrics.density
@@ -1229,6 +1198,8 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
         private var pendingOrbitRunnable: Runnable? = null
         private val preloadedContours = mutableMapOf<String, PreloadedContour>()
         private val finalizingContourPreviews = mutableMapOf<String, Bitmap>()
+        private val preloadWaiters = mutableMapOf<PreloadKey, MutableList<(PreloadedContour) -> Unit>>()
+        private val pendingPreloadedContours = mutableMapOf<PreloadKey, PreloadedContour>()
         private val pendingBackgroundCommits = mutableListOf<PendingBackgroundCommit>()
         private val hasActiveGesture: Boolean
             get() = contourOrbit != null ||
@@ -2915,9 +2886,6 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
             pendingOrbitRunnable = null
         }
 
-        private val preloadWaiters = mutableMapOf<PreloadKey, MutableList<(PreloadedContour) -> Unit>>()
-        private val pendingPreloadedContours = mutableMapOf<PreloadKey, PreloadedContour>()
-
         /** The document of a save that has not landed yet, when its terrain is already built (orbit saves or preloaded). */
         private fun pendingPreloaded(item: PaperItem): PreloadedContour? {
             val pending = contourRegistry.pendingDoc(currentDate to item.id) ?: return null
@@ -2992,27 +2960,31 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
         private fun scheduleContourOrbit(pointer: Int, item: PaperItem, rawX: Float, rawY: Float) {
             cancelPendingOrbit()
             preloadContourAsync(item)
+            val itemId = item.id
             val runnable = Runnable {
                 pendingOrbitRunnable = null
                 val drag = itemDrag ?: return@Runnable
-                if (!isAttachedToWindow || drag.pointerId != pointer || drag.itemId != item.id || drag.moved || twoFinger != null) {
+                if (!isAttachedToWindow || drag.pointerId != pointer || drag.itemId != itemId || drag.moved || twoFinger != null) {
                     return@Runnable
                 }
-                val cached = cachedPreloaded(item)
+                val currentItem = items.firstOrNull { it.id == itemId } ?: return@Runnable
+                val cached = cachedPreloaded(currentItem)
                 if (cached != null) {
-                    startContourOrbit(pointer, item, rawX, rawY, cached)
+                    startContourOrbit(pointer, currentItem, rawX, rawY, cached)
                 } else {
-                    preloadContourAsync(item) { loaded ->
+                    preloadContourAsync(currentItem) { loaded ->
                         val activeDrag = itemDrag
+                        val latestItem = items.firstOrNull { it.id == itemId }
                         if (isAttachedToWindow &&
+                            latestItem != null &&
                             activeDrag != null &&
                             activeDrag.pointerId == pointer &&
-                            activeDrag.itemId == item.id &&
+                            activeDrag.itemId == itemId &&
                             !activeDrag.moved &&
                             twoFinger == null &&
                             contourOrbit == null
                         ) {
-                            startContourOrbit(pointer, item, rawX, rawY, loaded)
+                            startContourOrbit(pointer, latestItem, rawX, rawY, loaded)
                         }
                     }
                 }
@@ -3145,7 +3117,7 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
             readable = true
             stopAudio()
             val storeToClear = itemsStore
-            storeToClear.clearMetadataAndCache()
+            storeToClear.clearCache()
             preloadWaiters.clear()
             pendingPreloadedContours.clear()
             preloadedContours.clear()

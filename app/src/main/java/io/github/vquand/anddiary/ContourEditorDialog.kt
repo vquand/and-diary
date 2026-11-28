@@ -112,10 +112,10 @@ internal object ContourEditorDialog {
         )
 
         fun refreshTopChips() {
-            styleChip(drawModeChip, !previewMode, palette, density)
-            styleChip(previewModeChip, previewMode, palette, density)
-            styleChip(smoothChip, selectedStyle == ContourRenderStyle.SMOOTH, palette, density)
-            styleChip(blockChip, selectedStyle == ContourRenderStyle.BLOCK, palette, density)
+            styleDialogChip(drawModeChip, !previewMode, palette, density, palette.paperSoft)
+            styleDialogChip(previewModeChip, previewMode, palette, density, palette.paperSoft)
+            styleDialogChip(smoothChip, selectedStyle == ContourRenderStyle.SMOOTH, palette, density, palette.paperSoft)
+            styleDialogChip(blockChip, selectedStyle == ContourRenderStyle.BLOCK, palette, density, palette.paperSoft)
             levelRow.visibility = if (previewMode) View.GONE else View.VISIBLE
             hintView.setText(
                 if (previewMode) R.string.contour_preview_hint else R.string.contour_draw_hint,
@@ -160,7 +160,7 @@ internal object ContourEditorDialog {
         val levelChips = mutableListOf<Pair<Int?, TextView>>()
         fun styleLevelChips() {
             for ((lvl, chip) in levelChips) {
-                styleChip(chip, lvl == selectedLevel, palette, density)
+                styleDialogChip(chip, lvl == selectedLevel, palette, density, palette.paperSoft)
             }
         }
         levelRow.addView(
@@ -330,16 +330,6 @@ internal object ContourEditorDialog {
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
             setPadding((8f * density).roundToInt(), 0, (8f * density).roundToInt(), 0)
         }
-
-    private fun styleChip(chip: TextView, active: Boolean, palette: DiaryPalette, density: Float) {
-        chip.setTextColor(if (active) palette.accent else palette.text)
-        chip.paint.isFakeBoldText = active
-        chip.background = GradientDrawable().apply {
-            setColor(if (active) palette.wash else palette.paperSoft)
-            setStroke((1f * density).roundToInt(), if (active) palette.accent else palette.rule)
-            cornerRadius = 8f * density
-        }
-    }
 }
 
 @SuppressLint("ViewConstructor")

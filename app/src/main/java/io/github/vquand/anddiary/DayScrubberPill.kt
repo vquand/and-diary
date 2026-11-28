@@ -5,6 +5,8 @@ import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.RectF
+import android.os.Handler
+import android.os.Looper
 import android.view.View
 import android.view.animation.DecelerateInterpolator
 import android.view.animation.OvershootInterpolator
@@ -13,6 +15,7 @@ import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 import java.time.format.TextStyle
 import java.util.Locale
+import java.util.concurrent.Executors
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
@@ -26,6 +29,7 @@ internal class DayScrubberPill(
     private var baseDate: LocalDate = LocalDate.now()
     private var offsetDays: Float = 0f
     private var savedDays: Set<String> = emptySet()
+    private var scanSeq = 0L
 
     private val monthFormatter = DateTimeFormatter.ofPattern("MMMM yyyy", Locale.getDefault())
 
@@ -66,7 +70,17 @@ internal class DayScrubberPill(
     fun showScrubber(currentDate: LocalDate) {
         baseDate = currentDate
         offsetDays = 0f
-        savedDays = scanSavedDays()
+        val seq = ++scanSeq
+        val dir = entriesDir
+        scanExecutor.execute {
+            val scanned = scanSavedDayNames(dir.list().orEmpty())
+            mainHandler.post {
+                if (scanSeq == seq && visibility == VISIBLE) {
+                    savedDays = scanned
+                    invalidate()
+                }
+            }
+        }
         animate().cancel()
         visibility = VISIBLE
         alpha = 0f
@@ -116,20 +130,6 @@ internal class DayScrubberPill(
     }
 
     private fun hasEntry(date: LocalDate): Boolean = date.toString() in savedDays
-
-    private fun scanSavedDays(): Set<String> {
-        val days = HashSet<String>()
-        for (name in entriesDir.list().orEmpty()) {
-            val stem = when {
-                name.endsWith(".ink") -> name.removeSuffix(".ink")
-                name.endsWith(".items") -> name.removeSuffix(".items")
-                else -> continue
-            }
-            val parsed = runCatching { LocalDate.parse(stem) }.getOrNull() ?: continue
-            if (parsed.toString() == stem) days.add(stem)
-        }
-        return days
-    }
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
@@ -204,5 +204,26 @@ internal class DayScrubberPill(
             }
         }
         canvas.restore()
+    }
+
+    internal companion object {
+        private val scanExecutor = Executors.newSingleThreadExecutor { runnable ->
+            Thread(runnable, "DiaryScrubberIO").apply { isDaemon = true }
+        }
+        private val mainHandler by lazy { Handler(Looper.getMainLooper()) }
+
+        fun scanSavedDayNames(names: Array<out String>): Set<String> {
+            val days = HashSet<String>()
+            for (name in names) {
+                val stem = when {
+                    name.endsWith(".ink") -> name.removeSuffix(".ink")
+                    name.endsWith(".items") -> name.removeSuffix(".items")
+                    else -> continue
+                }
+                val parsed = runCatching { LocalDate.parse(stem) }.getOrNull() ?: continue
+                if (parsed.toString() == stem) days.add(stem)
+            }
+            return days
+        }
     }
 }

@@ -207,9 +207,9 @@ internal class PaperItemRenderer(
         val completed = item.score > 0
         cardFill.color = if (completed) paperPalette.paper else paperPalette.paperSoft
         canvas.drawRoundRect(rect, corner, corner, cardFill)
-        cardStroke.color = if (completed) paperPalette.accent else paperPalette.rule
-        canvas.drawRoundRect(rect, corner, corner, cardStroke)
-        cardStroke.color = paperPalette.rule
+        withCardStroke(if (completed) paperPalette.accent else paperPalette.rule, cardStroke.strokeWidth) {
+            canvas.drawRoundRect(rect, corner, corner, cardStroke)
+        }
 
         val pad = 10f * density
         val boxSize = (rect.height() - pad * 2f).coerceAtLeast(48f * density)
@@ -267,9 +267,9 @@ internal class PaperItemRenderer(
                 rect.right - 8f * density,
                 rect.top + 8f * density + sealSize,
             )
-            cardStroke.color = paperPalette.accent
-            canvas.drawRoundRect(sealRect, 3.5f * density, 3.5f * density, cardStroke)
-            cardStroke.color = paperPalette.rule
+            withCardStroke(paperPalette.accent, cardStroke.strokeWidth) {
+                canvas.drawRoundRect(sealRect, 3.5f * density, 3.5f * density, cardStroke)
+            }
             val prevColor = badgeText.color
             badgeText.color = paperPalette.accent
             val glyph = if (item.score >= 85) "優" else "好"
@@ -419,9 +419,9 @@ internal class PaperItemRenderer(
         if (allowResize) {
             badgeFill.color = paperPalette.accent
             canvas.drawCircle(box.right, box.bottom, handleR, badgeFill)
-            cardStroke.color = paperPalette.paper
-            canvas.drawCircle(box.right, box.bottom, handleR - 2.5f * density, cardStroke)
-            cardStroke.color = paperPalette.rule
+            withCardStroke(paperPalette.paper, cardStroke.strokeWidth) {
+                canvas.drawCircle(box.right, box.bottom, handleR - 2.5f * density, cardStroke)
+            }
         }
     }
 

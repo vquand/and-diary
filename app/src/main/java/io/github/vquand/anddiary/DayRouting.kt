@@ -2,6 +2,37 @@ package io.github.vquand.anddiary
 
 import kotlin.concurrent.withLock
 
+internal object BackgroundItemSaveLogic {
+    fun isSaveStillValid(
+        startClearGen: Int,
+        currentClearGen: Int,
+        expectedToken: Long? = null,
+        activeToken: Long? = null,
+    ): Boolean =
+        startClearGen == currentClearGen &&
+            (expectedToken == null || activeToken == expectedToken)
+
+    fun mergeItemIntoList(
+        existing: List<PaperItem>,
+        existingItemId: String?,
+        newItem: PaperItem,
+    ): List<PaperItem>? = if (existingItemId != null) {
+        if (existing.none { it.id == existingItemId }) {
+            null
+        } else {
+            existing.map { current ->
+                if (current.id == existingItemId) {
+                    current.copy(ref = newItem.ref, label = newItem.label, durationMs = newItem.durationMs)
+                } else {
+                    current
+                }
+            }
+        }
+    } else {
+        existing + newItem
+    }
+}
+
 internal enum class CommitRoute {
     DISCARD,
     APPLY,
