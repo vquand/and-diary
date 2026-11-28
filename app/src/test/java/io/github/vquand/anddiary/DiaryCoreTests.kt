@@ -895,31 +895,34 @@ class DiaryCoreTests {
     @Test
     fun sharedPendingImportsProtectInflightFilesAcrossStoreInstances() {
         val dir = Files.createTempDirectory("diary-shared-pending").toFile()
+        val date = java.time.LocalDate.of(2026, 11, 28)
+        DayState.resetForTests()
         try {
             val inflight = File(dir, "inflight.contour.json").apply { writeText("{}") }
             val inflightTmp = File(dir, "inflight.contour.json.new").apply { writeText("{}") }
             val obsolete = File(dir, "obsolete.webp").apply { writeText("old") }
-            val key = dir.absolutePath
+            val state = DayState.of(date)
 
-            PaperItemsStore.addPendingImportForDir(key, inflight.name)
-            PaperItemsStore.pruneUnusedMediaInDir(dir, emptyList(), PaperItemsStore.protectedRefsForDir(key))
+            state.protect(inflight.name)
+            MediaPrune.prune(state, dir, { emptyList() }, emptySet())
 
             assertTrue(inflight.exists())
             assertTrue(inflightTmp.exists())
             assertFalse(obsolete.exists())
             assertTrue(dir.exists())
 
-            // Empty directory must not be deleted while an import for that dir is still protected.
+            // Empty directory must not be deleted while an import for that date is still protected.
             inflight.delete()
             inflightTmp.delete()
-            PaperItemsStore.pruneUnusedMediaInDir(dir, emptyList(), PaperItemsStore.protectedRefsForDir(key))
+            MediaPrune.prune(state, dir, { emptyList() }, emptySet())
             assertTrue(dir.exists())
 
-            PaperItemsStore.clearPendingImportForDir(key, inflight.name)
-            assertTrue(PaperItemsStore.protectedRefsForDir(key).isEmpty())
-            PaperItemsStore.pruneUnusedMediaInDir(dir, emptyList(), PaperItemsStore.protectedRefsForDir(key))
+            state.release(inflight.name)
+            assertTrue(state.protectedSnapshot().isEmpty())
+            MediaPrune.prune(state, dir, { emptyList() }, emptySet())
             assertFalse(dir.exists())
         } finally {
+            DayState.resetForTests()
             dir.deleteRecursively()
         }
     }

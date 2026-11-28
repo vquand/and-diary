@@ -354,6 +354,8 @@ private class ContourEditorCanvas(
     private var drawLevel: Int? = null
     private var cachedStrokes: List<ContourStroke>? = null
     private var cachedHeightmap: ContourHeightmap? = null
+    private var cachedVoxels: VoxelHeightmap? = null
+    private var cachedVoxelsFor: ContourHeightmap? = null
     private var cachedResolvedStrokes: List<ContourStroke> = initialDocument.strokes
     private var cachedResolvedLevels: List<Int> = ContourTerrainEngine.resolveLevels(initialDocument.strokes)
     private var activePointerId: Int = MotionEvent.INVALID_POINTER_ID
@@ -427,7 +429,7 @@ private class ContourEditorCanvas(
 
         if (preview3d) {
             val cached = cachedHeightmap
-            val hm = if (cachedStrokes == document.strokes && cached != null) {
+            val hm = if (cachedStrokes === document.strokes && cached != null) {
                 cached
             } else {
                 ContourTerrainEngine.buildHeightmap(document.strokes).also {
@@ -435,7 +437,16 @@ private class ContourEditorCanvas(
                     cachedHeightmap = it
                 }
             }
-            Contour3DRenderer.draw(canvas, document, w, h, hm)
+            val voxels = if (document.style == ContourRenderStyle.BLOCK) {
+                if (cachedVoxelsFor !== hm) {
+                    cachedVoxels = ContourTerrainEngine.quantizeForBlocks(hm)
+                    cachedVoxelsFor = hm
+                }
+                cachedVoxels
+            } else {
+                null
+            }
+            Contour3DRenderer.draw(canvas, document, w, h, hm, voxels)
             canvas.drawRoundRect(frameRect, 8f * density, 8f * density, borderPaint)
             return
         }
