@@ -109,13 +109,37 @@ fn read_json_string(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> Str
     out
 }
 
-/// Checks one flat item object body. Quoted values are consumed whole, so a label that
-/// contains `"kind":"hanzi"` or `"score":9` never counts as a field.
+fn skip_nested(chars: &mut std::iter::Peekable<std::str::Chars<'_>>, open: char, close: char) {
+    let mut nested = 1usize;
+    while let Some(c) = chars.next() {
+        if c == '"' {
+            let _ = read_json_string(chars);
+        } else if c == open {
+            nested += 1;
+        } else if c == close {
+            nested -= 1;
+            if nested == 0 {
+                break;
+            }
+        }
+    }
+}
+
+/// Checks one flat item object body. Quoted values, nested objects, and arrays are consumed
+/// whole, so nested `"kind":"hanzi"` or `"score":9` fields never count as top-level fields.
 fn object_has_completed_hanzi(body: &str) -> bool {
     let mut chars = body.chars().peekable();
     let mut is_hanzi = false;
     let mut score = 0u32;
     while let Some(ch) = chars.next() {
+        if ch == '{' {
+            skip_nested(&mut chars, '{', '}');
+            continue;
+        }
+        if ch == '[' {
+            skip_nested(&mut chars, '[', ']');
+            continue;
+        }
         if ch != '"' {
             continue;
         }
@@ -130,6 +154,10 @@ fn object_has_completed_hanzi(body: &str) -> bool {
             if key == "kind" {
                 is_hanzi = value == "hanzi";
             }
+        } else if chars.next_if_eq(&'{').is_some() {
+            skip_nested(&mut chars, '{', '}');
+        } else if chars.next_if_eq(&'[').is_some() {
+            skip_nested(&mut chars, '[', ']');
         } else {
             let mut token = String::new();
             while let Some(c) = chars.next_if(|c| *c != ',') {
@@ -191,6 +219,20 @@ mod tests {
         // Braces inside quoted labels must not truncate the JSON object scan.
         assert!(has_completed_hanzi(
             r#"[{"kind":"hanzi","label":"note}1\"x","ref":"永","score":88}]"#
+        ));
+
+        // Nested objects and arrays must not break brace depth or leak inner score fields.
+        assert!(has_completed_hanzi(
+            r#"[{"kind":"hanzi","meta":{"a":1},"score":90}]"#
+        ));
+        assert!(!has_completed_hanzi(
+            r#"[{"kind":"hanzi","meta":{"score":99},"score":0}]"#
+        ));
+        assert!(!has_completed_hanzi(
+            r#"[{"kind":"hanzi","history":[{"a":1,"score":99}],"score":0}]"#
+        ));
+        assert!(has_completed_hanzi(
+            r#"[{"kind":"hanzi","history":[{"a":1,"score":99}],"score":80}]"#
         ));
 
         // Text inside a quoted label is never a field.

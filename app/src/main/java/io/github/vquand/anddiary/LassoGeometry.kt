@@ -373,4 +373,79 @@ internal object LassoGeometry {
         val base = stripped.ifBlank { fallbackBase }
         return "$base.$extension"
     }
+
+    enum class DeleteConfirmHit { OK, NOT_OK }
+
+    data class DeleteConfirmPillBounds(
+        val left: Float,
+        val top: Float,
+        val right: Float,
+        val bottom: Float,
+        val splitX: Float,
+    )
+
+    fun deleteIconCenterX(boxRight: Float, density: Float): Float = boxRight - 30f * density
+
+    fun deleteConfirmPillBounds(
+        boxRight: Float,
+        boxTop: Float,
+        density: Float,
+        minLeft: Float = Float.NEGATIVE_INFINITY,
+        minInlineLeft: Float = Float.NEGATIVE_INFINITY,
+        minTop: Float = 4f * density,
+    ): DeleteConfirmPillBounds {
+        val pillW = 80f * density
+        val pillH = 30f * density
+        val okW = 40f * density
+        val gapFromClose = 18f * density
+        var right = boxRight - gapFromClose
+        var left = right - pillW
+        val centerY = if (left < minInlineLeft) {
+            // Narrow contour box: move the pill off the corner row so it never covers the gear button.
+            if (left < minLeft) {
+                left = minLeft
+                right = left + pillW
+            }
+            val liftY = boxTop - 28f * density
+            if (liftY - pillH / 2f >= minTop) liftY else boxTop + 28f * density
+        } else {
+            if (left < minLeft) {
+                left = boxRight + gapFromClose
+                right = left + pillW
+            }
+            boxTop
+        }
+        return DeleteConfirmPillBounds(
+            left = left,
+            top = centerY - pillH / 2f,
+            right = right,
+            bottom = centerY + pillH / 2f,
+            splitX = left + okW,
+        )
+    }
+
+    fun hitTestDeleteConfirmPill(
+        x: Float,
+        y: Float,
+        pill: DeleteConfirmPillBounds,
+        slopPx: Float,
+    ): DeleteConfirmHit? {
+        if (x < pill.left - slopPx || x > pill.right + slopPx) return null
+        if (y < pill.top - slopPx || y > pill.bottom + slopPx) return null
+        return if (x < pill.splitX) DeleteConfirmHit.OK else DeleteConfirmHit.NOT_OK
+    }
+
+    /**
+     * Returns true when a transformed stroke sample shares the exact same position and
+     * elapsed timestamp as the previous sample, which AndroidX Ink rejects in
+     * [androidx.ink.strokes.MutableStrokeInputBatch.add].
+     */
+    fun isDuplicateStrokeSample(
+        prevX: Float,
+        prevY: Float,
+        prevElapsedMillis: Long,
+        x: Float,
+        y: Float,
+        elapsedMillis: Long,
+    ): Boolean = x == prevX && y == prevY && elapsedMillis == prevElapsedMillis
 }

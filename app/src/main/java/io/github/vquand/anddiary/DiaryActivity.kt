@@ -139,6 +139,14 @@ class DiaryActivity : NativeActivity() {
         private external fun nativeOnDateSelected(year: Int, month: Int, day: Int)
 
         @JvmStatic
+        fun notifyDayWritten() {
+            runCatching { nativeOnDayWritten() }
+        }
+
+        @JvmStatic
+        private external fun nativeOnDayWritten()
+
+        @JvmStatic
         fun applySettings(
             activity: Activity,
             themeCode: Int,

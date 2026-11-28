@@ -207,9 +207,9 @@ internal class PaperItemRenderer(
         val completed = item.score > 0
         cardFill.color = if (completed) paperPalette.paper else paperPalette.paperSoft
         canvas.drawRoundRect(rect, corner, corner, cardFill)
-        cardStroke.color = if (completed) paperPalette.accent else paperPalette.rule
-        canvas.drawRoundRect(rect, corner, corner, cardStroke)
-        cardStroke.color = paperPalette.rule
+        withCardStroke(if (completed) paperPalette.accent else paperPalette.rule, cardStroke.strokeWidth) {
+            canvas.drawRoundRect(rect, corner, corner, cardStroke)
+        }
 
         val pad = 10f * density
         val boxSize = (rect.height() - pad * 2f).coerceAtLeast(48f * density)
@@ -267,9 +267,9 @@ internal class PaperItemRenderer(
                 rect.right - 8f * density,
                 rect.top + 8f * density + sealSize,
             )
-            cardStroke.color = paperPalette.accent
-            canvas.drawRoundRect(sealRect, 3.5f * density, 3.5f * density, cardStroke)
-            cardStroke.color = paperPalette.rule
+            withCardStroke(paperPalette.accent, cardStroke.strokeWidth) {
+                canvas.drawRoundRect(sealRect, 3.5f * density, 3.5f * density, cardStroke)
+            }
             val prevColor = badgeText.color
             badgeText.color = paperPalette.accent
             val glyph = if (item.score >= 85) "優" else "好"
@@ -308,7 +308,13 @@ internal class PaperItemRenderer(
         }
     }
 
-    fun drawSelectionHandles(canvas: Canvas, item: PaperItem, showCornerHandles: Boolean = true) {
+    fun drawSelectionHandles(
+        canvas: Canvas,
+        item: PaperItem,
+        showCornerHandles: Boolean = true,
+        confirmingDelete: Boolean = false,
+        viewportOffset: Float = 0f,
+    ) {
         val rotated = item.rotation != 0f
         val saveCount = if (rotated) {
             canvas.save().also {
@@ -326,6 +332,9 @@ internal class PaperItemRenderer(
                 rect,
                 allowResize = item.kind != PaperItemKind.AUDIO,
                 allowEdit = item.kind == PaperItemKind.CONTOUR,
+                confirmingDelete = confirmingDelete,
+                minPillLeft = if (rotated) Float.NEGATIVE_INFINITY else 4f * density,
+                minPillTop = if (rotated) Float.NEGATIVE_INFINITY else viewportOffset + 4f * density,
             )
         }
         if (rotated) {
@@ -333,15 +342,36 @@ internal class PaperItemRenderer(
         }
     }
 
-    fun drawAreaSelectionHandles(canvas: Canvas, bounds: RectF, allowResize: Boolean) {
+    fun drawAreaSelectionHandles(
+        canvas: Canvas,
+        bounds: RectF,
+        allowResize: Boolean,
+        confirmingDelete: Boolean = false,
+        viewportOffset: Float = 0f,
+    ) {
         val pad = 6f * density
         rect.set(bounds.left - pad, bounds.top - pad, bounds.right + pad, bounds.bottom + pad)
         canvas.drawRoundRect(rect, 8f * density, 8f * density, lassoFill)
         canvas.drawRoundRect(rect, 8f * density, 8f * density, lassoStroke)
-        drawCornerHandles(canvas, rect, allowResize = allowResize)
+        drawCornerHandles(
+            canvas,
+            rect,
+            allowResize = allowResize,
+            confirmingDelete = confirmingDelete,
+            minPillLeft = 4f * density,
+            minPillTop = viewportOffset + 4f * density,
+        )
     }
 
-    private fun drawCornerHandles(canvas: Canvas, box: RectF, allowResize: Boolean, allowEdit: Boolean = false) {
+    private fun drawCornerHandles(
+        canvas: Canvas,
+        box: RectF,
+        allowResize: Boolean,
+        allowEdit: Boolean = false,
+        confirmingDelete: Boolean = false,
+        minPillLeft: Float = 4f * density,
+        minPillTop: Float = 4f * density,
+    ) {
         val handleR = 12f * density
         if (allowEdit) {
             badgeFill.color = paperPalette.text
@@ -349,50 +379,135 @@ internal class PaperItemRenderer(
             drawGearIcon(canvas, box.left, box.top)
         }
 
-        badgeFill.color = paperPalette.danger
+        badgeFill.color = paperPalette.muted
         canvas.drawCircle(box.right, box.top, handleR, badgeFill)
         val baseline = box.top - (badgeText.descent() + badgeText.ascent()) / 2f
         canvas.drawText("×", box.right, baseline, badgeText)
 
+        if (confirmingDelete) {
+            val minInlineLeft = if (allowEdit) box.left + 20f * density else Float.NEGATIVE_INFINITY
+            val pill = LassoGeometry.deleteConfirmPillBounds(box.right, box.top, density, minPillLeft, minInlineLeft, minPillTop)
+            val pillRadius = (pill.bottom - pill.top) / 2f
+            val pillCenterY = (pill.top + pill.bottom) / 2f
+            pillRect.set(pill.left, pill.top, pill.right, pill.bottom)
+            clipPath.reset()
+            clipPath.addRoundRect(pillRect, pillRadius, pillRadius, Path.Direction.CW)
+            val clipSave = canvas.save()
+            canvas.clipPath(clipPath)
+            badgeFill.color = paperPalette.danger
+            canvas.drawRect(pill.left, pill.top, pill.splitX, pill.bottom, badgeFill)
+            badgeFill.color = paperPalette.paper
+            canvas.drawRect(pill.splitX, pill.top, pill.right, pill.bottom, badgeFill)
+            canvas.restoreToCount(clipSave)
+
+            withCardStroke(paperPalette.rule, 1f * density) {
+                canvas.drawLine(pill.splitX, pill.top + 4f * density, pill.splitX, pill.bottom - 4f * density, cardStroke)
+            }
+            withCardStroke(paperPalette.danger, 1.5f * density) {
+                canvas.drawRoundRect(pillRect, pillRadius, pillRadius, cardStroke)
+            }
+
+            drawCheckIcon(canvas, (pill.left + pill.splitX) / 2f, pillCenterY, paperPalette.paper)
+            drawCrossIcon(canvas, (pill.splitX + pill.right) / 2f, pillCenterY, paperPalette.text)
+        } else {
+            val deleteCx = LassoGeometry.deleteIconCenterX(box.right, density)
+            badgeFill.color = paperPalette.danger
+            canvas.drawCircle(deleteCx, box.top, handleR, badgeFill)
+            drawTrashIcon(canvas, deleteCx, box.top)
+        }
+
         if (allowResize) {
             badgeFill.color = paperPalette.accent
             canvas.drawCircle(box.right, box.bottom, handleR, badgeFill)
-            cardStroke.color = paperPalette.paper
-            canvas.drawCircle(box.right, box.bottom, handleR - 2.5f * density, cardStroke)
-            cardStroke.color = paperPalette.rule
+            withCardStroke(paperPalette.paper, cardStroke.strokeWidth) {
+                canvas.drawCircle(box.right, box.bottom, handleR - 2.5f * density, cardStroke)
+            }
+        }
+    }
+
+    private inline fun withCardStroke(
+        color: Int,
+        widthPx: Float,
+        join: Paint.Join = Paint.Join.ROUND,
+        block: () -> Unit,
+    ) {
+        val prevColor = cardStroke.color
+        val prevWidth = cardStroke.strokeWidth
+        val prevCap = cardStroke.strokeCap
+        val prevJoin = cardStroke.strokeJoin
+        cardStroke.color = color
+        cardStroke.strokeWidth = widthPx
+        cardStroke.strokeCap = Paint.Cap.ROUND
+        cardStroke.strokeJoin = join
+        try {
+            block()
+        } finally {
+            cardStroke.color = prevColor
+            cardStroke.strokeWidth = prevWidth
+            cardStroke.strokeCap = prevCap
+            cardStroke.strokeJoin = prevJoin
+        }
+    }
+
+    private fun drawTrashIcon(canvas: Canvas, cx: Float, cy: Float) {
+        withCardStroke(paperPalette.paper, 1.5f * density) {
+            // Lid handle and lid bar
+            canvas.drawLine(cx - 1.6f * density, cy - 5.2f * density, cx + 1.6f * density, cy - 5.2f * density, cardStroke)
+            canvas.drawLine(cx - 4.8f * density, cy - 3.3f * density, cx + 4.8f * density, cy - 3.3f * density, cardStroke)
+
+            // Bin body
+            trianglePath.reset()
+            trianglePath.moveTo(cx - 3.6f * density, cy - 3.3f * density)
+            trianglePath.lineTo(cx - 3.0f * density, cy + 5.0f * density)
+            trianglePath.lineTo(cx + 3.0f * density, cy + 5.0f * density)
+            trianglePath.lineTo(cx + 3.6f * density, cy - 3.3f * density)
+            canvas.drawPath(trianglePath, cardStroke)
+
+            cardStroke.strokeWidth = 1.2f * density
+            canvas.drawLine(cx - 1.2f * density, cy - 1.2f * density, cx - 1.0f * density, cy + 3.0f * density, cardStroke)
+            canvas.drawLine(cx + 1.2f * density, cy - 1.2f * density, cx + 1.0f * density, cy + 3.0f * density, cardStroke)
+        }
+    }
+
+    private fun drawCheckIcon(canvas: Canvas, cx: Float, cy: Float, color: Int) {
+        withCardStroke(color, 2.0f * density) {
+            trianglePath.reset()
+            trianglePath.moveTo(cx - 5.0f * density, cy + 0.3f * density)
+            trianglePath.lineTo(cx - 1.3f * density, cy + 4.0f * density)
+            trianglePath.lineTo(cx + 5.2f * density, cy - 3.6f * density)
+            canvas.drawPath(trianglePath, cardStroke)
+        }
+    }
+
+    private fun drawCrossIcon(canvas: Canvas, cx: Float, cy: Float, color: Int) {
+        withCardStroke(color, 2.0f * density) {
+            val r = 4.2f * density
+            canvas.drawLine(cx - r, cy - r, cx + r, cy + r, cardStroke)
+            canvas.drawLine(cx - r, cy + r, cx + r, cy - r, cardStroke)
         }
     }
 
     private fun drawGearIcon(canvas: Canvas, cx: Float, cy: Float) {
-        val prevColor = cardStroke.color
-        val prevWidth = cardStroke.strokeWidth
-        val prevCap = cardStroke.strokeCap
-        cardStroke.color = paperPalette.paper
-        cardStroke.strokeCap = Paint.Cap.ROUND
+        withCardStroke(paperPalette.paper, 1.6f * density) {
+            val ringR = 3.8f * density
+            val toothInner = 4.2f * density
+            val toothOuter = 6.3f * density
+            canvas.drawCircle(cx, cy, ringR, cardStroke)
 
-        val ringR = 3.8f * density
-        val toothInner = 4.2f * density
-        val toothOuter = 6.3f * density
-        cardStroke.strokeWidth = 1.6f * density
-        canvas.drawCircle(cx, cy, ringR, cardStroke)
-
-        cardStroke.strokeWidth = 1.8f * density
-        for (i in 0 until 8) {
-            val angle = i * (Math.PI / 4.0)
-            val cosA = kotlin.math.cos(angle).toFloat()
-            val sinA = kotlin.math.sin(angle).toFloat()
-            canvas.drawLine(
-                cx + cosA * toothInner,
-                cy + sinA * toothInner,
-                cx + cosA * toothOuter,
-                cy + sinA * toothOuter,
-                cardStroke,
-            )
+            cardStroke.strokeWidth = 1.8f * density
+            for (i in 0 until 8) {
+                val angle = i * (Math.PI / 4.0)
+                val cosA = kotlin.math.cos(angle).toFloat()
+                val sinA = kotlin.math.sin(angle).toFloat()
+                canvas.drawLine(
+                    cx + cosA * toothInner,
+                    cy + sinA * toothInner,
+                    cx + cosA * toothOuter,
+                    cy + sinA * toothOuter,
+                    cardStroke,
+                )
+            }
         }
-
-        cardStroke.color = prevColor
-        cardStroke.strokeWidth = prevWidth
-        cardStroke.strokeCap = prevCap
     }
 
     fun drawLassoPath(canvas: Canvas, points: List<Pair<Float, Float>>) {

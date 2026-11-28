@@ -69,6 +69,11 @@ internal class ToolboxPopover(
     private val hueBar = makeSeekBar(360)
     private val satBar = makeSeekBar(100)
     private val valBar = makeSeekBar(100)
+    private val trackHsv = FloatArray(3)
+    private val satTrackColors = IntArray(2)
+    private val valTrackColors = IntArray(2)
+    private val satGradient = createTrackGradient(intArrayOf(Color.DKGRAY, Color.RED))
+    private val valGradient = createTrackGradient(intArrayOf(Color.BLACK, Color.RED))
 
     private val sizeTitle = TextView(context).apply {
         setTextColor(palette.muted)
@@ -188,6 +193,16 @@ internal class ToolboxPopover(
         })
         addView(sizeBar, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT))
 
+        hueBar.progressDrawable = wrapTrackDrawable(
+            createTrackGradient(
+                intArrayOf(
+                    Color.RED, Color.YELLOW, Color.GREEN,
+                    Color.CYAN, Color.BLUE, Color.MAGENTA, Color.RED,
+                ),
+            ),
+        )
+        satBar.progressDrawable = wrapTrackDrawable(satGradient)
+        valBar.progressDrawable = wrapTrackDrawable(valGradient)
         wireSliders()
     }
 
@@ -294,33 +309,47 @@ internal class ToolboxPopover(
     }
 
     private fun updateHsvTracks() {
-        val pureHue = Color.HSVToColor(floatArrayOf(hsv[0], 1f, 1f))
-        val brightSat = Color.HSVToColor(floatArrayOf(hsv[0], hsv[1], 1f))
-        val neutralVal = Color.HSVToColor(floatArrayOf(hsv[0], 0f, hsv[2]))
+        trackHsv[0] = hsv[0]
+        trackHsv[1] = 1f
+        trackHsv[2] = 1f
+        val pureHue = Color.HSVToColor(trackHsv)
 
-        hueBar.progressDrawable = trackDrawable(
-            intArrayOf(
-                Color.RED, Color.YELLOW, Color.GREEN,
-                Color.CYAN, Color.BLUE, Color.MAGENTA, Color.RED,
-            ),
-        )
-        satBar.progressDrawable = trackDrawable(intArrayOf(neutralVal, Color.HSVToColor(floatArrayOf(hsv[0], 1f, hsv[2]))))
-        valBar.progressDrawable = trackDrawable(intArrayOf(Color.BLACK, brightSat))
-        // Keep pureHue referenced cleanly if val is 0 so hue track stays vivid.
+        trackHsv[1] = hsv[1]
+        val brightSat = Color.HSVToColor(trackHsv)
+
+        trackHsv[1] = 0f
+        trackHsv[2] = hsv[2]
+        val neutralVal = Color.HSVToColor(trackHsv)
+
+        trackHsv[1] = 1f
+        val fullSatVal = Color.HSVToColor(trackHsv)
+
         if (hsv[2] < 0.05f) {
-            satBar.progressDrawable = trackDrawable(intArrayOf(Color.DKGRAY, pureHue))
+            satTrackColors[0] = Color.DKGRAY
+            satTrackColors[1] = pureHue
+        } else {
+            satTrackColors[0] = neutralVal
+            satTrackColors[1] = fullSatVal
         }
+        valTrackColors[0] = Color.BLACK
+        valTrackColors[1] = brightSat
+
+        satGradient.colors = satTrackColors
+        valGradient.colors = valTrackColors
+        satBar.invalidate()
+        valBar.invalidate()
     }
 
-    private fun trackDrawable(colors: IntArray): LayerDrawable {
-        val gradient = GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT, colors).apply {
+    private fun createTrackGradient(colors: IntArray) =
+        GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT, colors).apply {
             cornerRadius = 4f * density
             setSize(0, dp(8))
         }
-        return LayerDrawable(arrayOf(gradient)).apply {
+
+    private fun wrapTrackDrawable(gradient: GradientDrawable): LayerDrawable =
+        LayerDrawable(arrayOf(gradient)).apply {
             setLayerInset(0, 0, dp(10), 0, dp(10))
         }
-    }
 
     private fun rebuildPresets(currentSizeDp: Float) {
         presetRow.removeAllViews()

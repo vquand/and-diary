@@ -18,11 +18,13 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.io.FileNotFoundException
+import java.io.FileOutputStream
 import java.io.IOException
 import java.time.LocalDate
 import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.Executors
+import kotlin.concurrent.withLock
 import kotlin.math.max
 import kotlin.math.roundToInt
 
@@ -127,64 +129,60 @@ internal data class StickerCatalog(
 }
 
 internal class PaperItemsStore(private val context: Context, val date: LocalDate) {
+    val state = DayState.of(date)
     private val itemsFile = AtomicFile(File(context.filesDir, "entries/$date.items"))
     private val mediaDir = File(context.filesDir, "media/$date")
-    private val mediaBitmaps = object : LruCache<String, Bitmap>(mediaCacheBytes()) {
-        override fun sizeOf(key: String, value: Bitmap): Int = value.byteCount
-    }
     private val failedMedia = mutableSetOf<String>()
-    private val pendingImports = mutableSetOf<String>()
     val catalog: StickerCatalog by lazy { loadCatalog(context) }
     val hanziCatalog: HanziCatalog by lazy { loadHanziCatalog(context) }
 
-    fun read(): List<PaperItem> {
+    fun read(): List<PaperItem> = state.lock.withLock {
         val bytes = try {
             itemsFile.readFully()
         } catch (error: FileNotFoundException) {
             if (itemsFile.baseFile.exists()) throw error
-            return emptyList()
+            return@withLock emptyList()
         }
-        return decodeItemsJson(String(bytes, Charsets.UTF_8))
+        decodeItemsJson(String(bytes, Charsets.UTF_8))
     }
 
     fun write(items: List<PaperItem>) {
-        if (items.isEmpty()) {
-            itemsFile.delete()
-            if (itemsFile.baseFile.exists()) throw IOException("Could not remove empty items file")
-            return
-        }
-        itemsFile.baseFile.parentFile?.mkdirs()
-        val payload = encodeItemsJson(items).toByteArray(Charsets.UTF_8)
-        val stream = itemsFile.startWrite()
-        try {
-            stream.write(payload)
-            stream.flush()
-            itemsFile.finishWrite(stream)
-        } catch (error: Exception) {
-            itemsFile.failWrite(stream)
-            throw error
+        state.lock.withLock {
+            if (items.isEmpty()) {
+                itemsFile.delete()
+                if (itemsFile.baseFile.exists()) throw IOException("Could not remove empty items file")
+                return
+            }
+            itemsFile.baseFile.parentFile?.mkdirs()
+            val payload = encodeItemsJson(items).toByteArray(Charsets.UTF_8)
+            val stream = itemsFile.startWrite()
+            try {
+                stream.write(payload)
+                stream.flush()
+                itemsFile.finishWrite(stream)
+            } catch (error: Exception) {
+                itemsFile.failWrite(stream)
+                throw error
+            }
         }
     }
 
-    fun clearMetadataAndCache() {
-        itemsFile.delete()
-        mediaBitmaps.evictAll()
+    fun clearCache() {
+        val prefix = "$date/"
+        for (key in mediaBitmaps.snapshot().keys) {
+            if (key.startsWith(prefix)) {
+                mediaBitmaps.remove(key)
+            }
+        }
         synchronized(failedMedia) { failedMedia.clear() }
     }
 
-    fun deleteMediaDir() {
-        mediaDir.deleteRecursively()
-    }
-
     fun clearPendingImport(filename: String) {
-        synchronized(pendingImports) {
-            pendingImports.remove(filename)
-        }
+        state.release(filename)
     }
 
-    fun pruneUnusedMedia(activeItems: List<PaperItem>) {
-        val protectedRefs = synchronized(pendingImports) { pendingImports.toSet() }
-        pruneUnusedMediaInDir(mediaDir, activeItems, protectedRefs)
+    fun pruneUnusedMediaFromDisk(retained: Set<String> = emptySet()) {
+        MediaPrune.prune(state, mediaDir, { runCatching { read() }.getOrNull() }, retained)
     }
 
     fun mediaFile(item: PaperItem): File = File(mediaDir, item.ref)
@@ -263,23 +261,31 @@ internal class PaperItemsStore(private val context: Context, val date: LocalDate
     private fun writeContourFile(document: ContourDocument): String {
         val filename = "${UUID.randomUUID()}.contour.json"
         val destination = File(mediaDir, filename)
-        mediaDir.mkdirs()
-        synchronized(pendingImports) {
-            pendingImports.add(filename)
+        state.lock.withLock {
+            state.protect(filename)
+            mediaDir.mkdirs()
         }
         val atomic = AtomicFile(destination)
-        val payload = document.toJson().toByteArray(Charsets.UTF_8)
-        val stream = atomic.startWrite()
+        var stream: FileOutputStream? = null
+        var succeeded = false
         try {
+            val payload = document.toJson().toByteArray(Charsets.UTF_8)
+            stream = atomic.startWrite()
             stream.write(payload)
             stream.flush()
             atomic.finishWrite(stream)
-        } catch (error: Exception) {
-            atomic.failWrite(stream)
-            clearPendingImport(filename)
-            throw error
+            stream = null
+            succeeded = true
+            return filename
+        } finally {
+            if (!succeeded) {
+                if (stream != null) {
+                    atomic.failWrite(stream)
+                }
+                destination.delete()
+                state.release(filename)
+            }
         }
-        return filename
     }
 
     fun importMedia(
@@ -296,10 +302,12 @@ internal class PaperItemsStore(private val context: Context, val date: LocalDate
         val id = UUID.randomUUID().toString()
         val filename = "$id.$extension"
         val destination = File(mediaDir, filename)
-        synchronized(pendingImports) { pendingImports.add(filename) }
-        try {
+        state.lock.withLock {
+            state.protect(filename)
             mediaDir.mkdirs()
-
+        }
+        var succeeded = false
+        try {
             if (kind == PaperItemKind.PHOTO) {
                 importPhotoAsWebp(uri, destination)
             } else {
@@ -308,75 +316,76 @@ internal class PaperItemsStore(private val context: Context, val date: LocalDate
                 } ?: throw IOException("Could not open selected media")
             }
 
-        val label = displayName?.substringBeforeLast('.')?.takeIf { it.isNotBlank() } ?: when (kind) {
-            PaperItemKind.PHOTO -> "Photo"
-            PaperItemKind.VIDEO -> "Video"
-            PaperItemKind.AUDIO -> "Audio"
-            PaperItemKind.STICKER -> "Sticker"
-            PaperItemKind.HANZI -> "Hanzi"
-            PaperItemKind.CONTOUR -> "Contour"
-        }
+            val label = displayName?.substringBeforeLast('.')?.takeIf { it.isNotBlank() } ?: when (kind) {
+                PaperItemKind.PHOTO -> "Photo"
+                PaperItemKind.VIDEO -> "Video"
+                PaperItemKind.AUDIO -> "Audio"
+                PaperItemKind.STICKER -> "Sticker"
+                PaperItemKind.HANZI -> "Hanzi"
+                PaperItemKind.CONTOUR -> "Contour"
+            }
 
-        var durationMs = 0L
-        val targetWidth: Float
-        val targetHeight: Float
+            var durationMs = 0L
+            val targetWidth: Float
+            val targetHeight: Float
 
-        when (kind) {
-            PaperItemKind.PHOTO -> {
-                val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                BitmapFactory.decodeFile(destination.absolutePath, opts)
-                val aspect = if (opts.outWidth > 0 && opts.outHeight > 0) {
-                    opts.outHeight.toFloat() / opts.outWidth.toFloat()
-                } else {
-                    0.75f
+            when (kind) {
+                PaperItemKind.PHOTO -> {
+                    val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                    BitmapFactory.decodeFile(destination.absolutePath, opts)
+                    val aspect = if (opts.outWidth > 0 && opts.outHeight > 0) {
+                        opts.outHeight.toFloat() / opts.outWidth.toFloat()
+                    } else {
+                        0.75f
+                    }
+                    targetWidth = minOf(maxWidth, 220f * density).coerceAtLeast(96f * density)
+                    targetHeight = (targetWidth * aspect).coerceIn(64f * density, 340f * density)
                 }
-                targetWidth = minOf(maxWidth, 220f * density).coerceAtLeast(96f * density)
-                targetHeight = (targetWidth * aspect).coerceIn(64f * density, 340f * density)
-            }
 
-            PaperItemKind.VIDEO -> {
-                var aspect = 9f / 16f
-                val retriever = MediaMetadataRetriever()
-                try {
-                    retriever.setDataSource(destination.absolutePath)
-                    durationMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
-                        ?.toLongOrNull() ?: 0L
-                    val rawW = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)
-                        ?.toIntOrNull() ?: 0
-                    val rawH = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)
-                        ?.toIntOrNull() ?: 0
-                    val rot = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)
-                        ?.toIntOrNull() ?: 0
-                    val (w, h) = if (rot == 90 || rot == 270) rawH to rawW else rawW to rawH
-                    if (w > 0 && h > 0) aspect = h.toFloat() / w.toFloat()
-                } catch (_: Exception) {
-                } finally {
-                    retriever.release()
+                PaperItemKind.VIDEO -> {
+                    var aspect = 9f / 16f
+                    val retriever = MediaMetadataRetriever()
+                    try {
+                        retriever.setDataSource(destination.absolutePath)
+                        durationMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+                            ?.toLongOrNull() ?: 0L
+                        val rawW = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)
+                            ?.toIntOrNull() ?: 0
+                        val rawH = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)
+                            ?.toIntOrNull() ?: 0
+                        val rot = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)
+                            ?.toIntOrNull() ?: 0
+                        val (w, h) = if (rot == 90 || rot == 270) rawH to rawW else rawW to rawH
+                        if (w > 0 && h > 0) aspect = h.toFloat() / w.toFloat()
+                    } catch (_: Exception) {
+                    } finally {
+                        retriever.release()
+                    }
+                    targetWidth = minOf(maxWidth, 230f * density).coerceAtLeast(120f * density)
+                    targetHeight = (targetWidth * aspect).coerceIn(96f * density, 320f * density)
                 }
-                targetWidth = minOf(maxWidth, 230f * density).coerceAtLeast(120f * density)
-                targetHeight = (targetWidth * aspect).coerceIn(96f * density, 320f * density)
-            }
 
-            PaperItemKind.AUDIO -> {
-                val retriever = MediaMetadataRetriever()
-                try {
-                    retriever.setDataSource(destination.absolutePath)
-                    durationMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
-                        ?.toLongOrNull() ?: 0L
-                } catch (_: Exception) {
-                } finally {
-                    retriever.release()
+                PaperItemKind.AUDIO -> {
+                    val retriever = MediaMetadataRetriever()
+                    try {
+                        retriever.setDataSource(destination.absolutePath)
+                        durationMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+                            ?.toLongOrNull() ?: 0L
+                    } catch (_: Exception) {
+                    } finally {
+                        retriever.release()
+                    }
+                    targetWidth = minOf(maxWidth, 236f * density).coerceAtLeast(160f * density)
+                    targetHeight = 58f * density
                 }
-                targetWidth = minOf(maxWidth, 236f * density).coerceAtLeast(160f * density)
-                targetHeight = 58f * density
+
+                PaperItemKind.STICKER, PaperItemKind.HANZI, PaperItemKind.CONTOUR -> {
+                    targetWidth = 76f * density
+                    targetHeight = 76f * density
+                }
             }
 
-            PaperItemKind.STICKER, PaperItemKind.HANZI, PaperItemKind.CONTOUR -> {
-                targetWidth = 76f * density
-                targetHeight = 76f * density
-            }
-        }
-
+            succeeded = true
             return PaperItem(
                 id = id,
                 kind = kind,
@@ -388,15 +397,18 @@ internal class PaperItemsStore(private val context: Context, val date: LocalDate
                 width = targetWidth,
                 height = targetHeight,
             )
-        } catch (error: Exception) {
-            destination.delete()
-            clearPendingImport(filename)
-            throw error
+        } finally {
+            if (!succeeded) {
+                destination.delete()
+                state.release(filename)
+            }
         }
     }
 
+    private fun mediaBitmapKey(item: PaperItem): String = "$date/${item.kind.wire}:${item.ref}"
+
     fun cacheBitmap(item: PaperItem, bitmap: Bitmap) {
-        val key = "${item.kind.wire}:${item.ref}"
+        val key = mediaBitmapKey(item)
         mediaBitmaps.put(key, bitmap)
         synchronized(failedMedia) { failedMedia.remove(key) }
     }
@@ -404,7 +416,7 @@ internal class PaperItemsStore(private val context: Context, val date: LocalDate
     fun cachedBitmap(item: PaperItem): Bitmap? {
         if (item.kind == PaperItemKind.AUDIO || item.kind == PaperItemKind.HANZI) return null
         if (item.kind == PaperItemKind.STICKER) return cachedStickerBitmap(item.ref)
-        return mediaBitmaps.get("${item.kind.wire}:${item.ref}")
+        return mediaBitmaps.get(mediaBitmapKey(item))
     }
 
     fun hasBitmapEntry(item: PaperItem): Boolean {
@@ -412,14 +424,14 @@ internal class PaperItemsStore(private val context: Context, val date: LocalDate
         if (item.kind == PaperItemKind.STICKER) {
             return stickerBitmaps.get(item.ref) != null || synchronized(failedStickers) { item.ref in failedStickers }
         }
-        val key = "${item.kind.wire}:${item.ref}"
+        val key = mediaBitmapKey(item)
         return mediaBitmaps.get(key) != null || synchronized(failedMedia) { key in failedMedia }
     }
 
     fun loadBitmap(item: PaperItem): Bitmap? {
         if (item.kind == PaperItemKind.AUDIO || item.kind == PaperItemKind.HANZI) return null
         if (item.kind == PaperItemKind.STICKER) return loadStickerBitmap(item.ref)
-        val key = "${item.kind.wire}:${item.ref}"
+        val key = mediaBitmapKey(item)
         mediaBitmaps.get(key)?.let { return it }
         if (synchronized(failedMedia) { key in failedMedia }) return null
 
@@ -585,8 +597,16 @@ internal class PaperItemsStore(private val context: Context, val date: LocalDate
     }
 
     companion object {
+        @Volatile
         private var cachedCatalog: StickerCatalog? = null
+
+        @Volatile
         private var cachedHanzi: HanziCatalog? = null
+        private val catalogLock = Any()
+        private val hanziCatalogLock = Any()
+        private val mediaBitmaps = object : LruCache<String, Bitmap>(mediaCacheBytes()) {
+            override fun sizeOf(key: String, value: Bitmap): Int = value.byteCount
+        }
         private val stickerBitmaps = object : LruCache<String, Bitmap>(stickerCacheBytes()) {
             override fun sizeOf(key: String, value: Bitmap): Int = value.byteCount
         }
@@ -669,106 +689,85 @@ internal class PaperItemsStore(private val context: Context, val date: LocalDate
 
         fun loadHanziCatalog(context: Context): HanziCatalog {
             cachedHanzi?.let { return it }
-            val parsed = runCatching {
-                val jsonText = context.assets.open("hanzi/words.json")
-                    .bufferedReader(Charsets.UTF_8)
-                    .use { it.readText() }
-                val root = JSONObject(jsonText)
-                val wordsArr = root.getJSONArray("words")
-                val words = List(wordsArr.length()) { i ->
-                    val obj = wordsArr.getJSONObject(i)
-                    val strokesArr = obj.getJSONArray("strokes")
-                    val strokes = List(strokesArr.length()) { s ->
-                        val ptsArr = strokesArr.getJSONArray(s)
-                        List(ptsArr.length()) { p ->
-                            val pt = ptsArr.getJSONArray(p)
-                            pt.getDouble(0).toFloat() to pt.getDouble(1).toFloat()
+            synchronized(hanziCatalogLock) {
+                cachedHanzi?.let { return it }
+                val parsed = runCatching {
+                    val jsonText = context.assets.open("hanzi/words.json")
+                        .bufferedReader(Charsets.UTF_8)
+                        .use { it.readText() }
+                    val root = JSONObject(jsonText)
+                    val wordsArr = root.getJSONArray("words")
+                    val words = List(wordsArr.length()) { i ->
+                        val obj = wordsArr.getJSONObject(i)
+                        val strokesArr = obj.getJSONArray("strokes")
+                        val strokes = List(strokesArr.length()) { s ->
+                            val ptsArr = strokesArr.getJSONArray(s)
+                            List(ptsArr.length()) { p ->
+                                val pt = ptsArr.getJSONArray(p)
+                                pt.getDouble(0).toFloat() to pt.getDouble(1).toFloat()
+                            }
                         }
+                        HanziWord(
+                            char = obj.getString("char"),
+                            pinyin = obj.getString("pinyin"),
+                            hanViet = obj.getString("hanViet"),
+                            meaning = obj.getString("meaning"),
+                            strokes = strokes,
+                        )
                     }
-                    HanziWord(
-                        char = obj.getString("char"),
-                        pinyin = obj.getString("pinyin"),
-                        hanViet = obj.getString("hanViet"),
-                        meaning = obj.getString("meaning"),
-                        strokes = strokes,
-                    )
-                }
-                HanziCatalog(words)
-            }.getOrElse { HanziCatalog(emptyList()) }
-            cachedHanzi = parsed
-            return parsed
+                    HanziCatalog(words)
+                }.getOrNull() ?: return HanziCatalog(emptyList())
+                cachedHanzi = parsed
+                return parsed
+            }
         }
 
         fun loadCatalog(context: Context): StickerCatalog {
             cachedCatalog?.let { return it }
-            val parsed = runCatching {
-                val jsonText = context.assets.open("stickers/catalog.json")
-                    .bufferedReader(Charsets.UTF_8)
-                    .use { it.readText() }
-                val root = JSONObject(jsonText)
-                val packsArr = root.getJSONArray("packs")
-                val packs = List(packsArr.length()) { index ->
-                    val obj = packsArr.getJSONObject(index)
-                    StickerPack(
-                        id = obj.getString("id"),
-                        name = obj.getString("name"),
-                        description = obj.optString("description", ""),
-                    )
-                }
-                val stickersArr = root.getJSONArray("stickers")
-                val stickers = List(stickersArr.length()) { index ->
-                    val obj = stickersArr.getJSONObject(index)
-                    val tagsArr = obj.optJSONArray("tags")
-                    val tags = if (tagsArr != null) {
-                        List(tagsArr.length()) { t -> tagsArr.getString(t) }
-                    } else {
-                        emptyList()
+            synchronized(catalogLock) {
+                cachedCatalog?.let { return it }
+                val parsed = runCatching {
+                    val jsonText = context.assets.open("stickers/catalog.json")
+                        .bufferedReader(Charsets.UTF_8)
+                        .use { it.readText() }
+                    val root = JSONObject(jsonText)
+                    val packsArr = root.getJSONArray("packs")
+                    val packs = List(packsArr.length()) { index ->
+                        val obj = packsArr.getJSONObject(index)
+                        StickerPack(
+                            id = obj.getString("id"),
+                            name = obj.getString("name"),
+                            description = obj.optString("description", ""),
+                        )
                     }
-                    val sheet = obj.optString("sheet", "").takeIf { it.isNotEmpty() }
-                    StickerSpec(
-                        id = obj.getString("id"),
-                        packId = obj.getString("pack"),
-                        file = obj.optString("file", ""),
-                        label = obj.getString("label"),
-                        description = obj.optString("description", ""),
-                        tags = tags,
-                        sheet = sheet,
-                        cols = obj.optInt("cols", 1),
-                        rows = obj.optInt("rows", 1),
-                        col = obj.optInt("col", 0),
-                        row = obj.optInt("row", 0),
-                    )
-                }
-                StickerCatalog(packs, stickers)
-            }.getOrElse {
-                StickerCatalog(emptyList(), emptyList())
-            }
-            cachedCatalog = parsed
-            return parsed
-        }
-
-        fun pruneUnusedMediaInDir(
-            mediaDir: File,
-            activeItems: List<PaperItem>,
-            protectedRefs: Set<String> = emptySet(),
-        ) {
-            if (!mediaDir.isDirectory) return
-            val keep = activeItems
-                .filter {
-                    it.kind == PaperItemKind.PHOTO ||
-                        it.kind == PaperItemKind.VIDEO ||
-                        it.kind == PaperItemKind.AUDIO ||
-                        it.kind == PaperItemKind.CONTOUR
-                }
-                .mapTo(mutableSetOf()) { it.ref }
-            keep.addAll(protectedRefs)
-            mediaDir.listFiles()?.forEach { file ->
-                if (file.isFile && file.name !in keep) {
-                    file.delete()
-                }
-            }
-            if (mediaDir.list().isNullOrEmpty()) {
-                mediaDir.delete()
+                    val stickersArr = root.getJSONArray("stickers")
+                    val stickers = List(stickersArr.length()) { index ->
+                        val obj = stickersArr.getJSONObject(index)
+                        val tagsArr = obj.optJSONArray("tags")
+                        val tags = if (tagsArr != null) {
+                            List(tagsArr.length()) { t -> tagsArr.getString(t) }
+                        } else {
+                            emptyList()
+                        }
+                        val sheet = obj.optString("sheet", "").takeIf { it.isNotEmpty() }
+                        StickerSpec(
+                            id = obj.getString("id"),
+                            packId = obj.getString("pack"),
+                            file = obj.optString("file", ""),
+                            label = obj.getString("label"),
+                            description = obj.optString("description", ""),
+                            tags = tags,
+                            sheet = sheet,
+                            cols = obj.optInt("cols", 1),
+                            rows = obj.optInt("rows", 1),
+                            col = obj.optInt("col", 0),
+                            row = obj.optInt("row", 0),
+                        )
+                    }
+                    StickerCatalog(packs, stickers)
+                }.getOrNull() ?: return StickerCatalog(emptyList(), emptyList())
+                cachedCatalog = parsed
+                return parsed
             }
         }
 

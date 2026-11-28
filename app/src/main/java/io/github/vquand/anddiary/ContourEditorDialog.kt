@@ -8,6 +8,7 @@ import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.RectF
 import android.graphics.drawable.GradientDrawable
+import android.os.Build
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.MotionEvent
@@ -35,6 +36,7 @@ internal object ContourEditorDialog {
         var previewMode = false
         var selectedLevel: Int? = null // null = Auto nesting elevation
         val strokes = initialDocument.strokes.toMutableList()
+        var committedStrokes = initialDocument.strokes
         var dialogRef: Dialog? = null
 
         val root = LinearLayout(context).apply {
@@ -104,16 +106,16 @@ internal object ContourEditorDialog {
 
         fun currentDocument() = ContourDocument(
             style = selectedStyle,
-            strokes = strokes.toList(),
+            strokes = committedStrokes,
             yawRad = initialDocument.yawRad,
             pitchRad = initialDocument.pitchRad,
         )
 
         fun refreshTopChips() {
-            styleChip(drawModeChip, !previewMode, palette, density)
-            styleChip(previewModeChip, previewMode, palette, density)
-            styleChip(smoothChip, selectedStyle == ContourRenderStyle.SMOOTH, palette, density)
-            styleChip(blockChip, selectedStyle == ContourRenderStyle.BLOCK, palette, density)
+            styleDialogChip(drawModeChip, !previewMode, palette, density, palette.paperSoft)
+            styleDialogChip(previewModeChip, previewMode, palette, density, palette.paperSoft)
+            styleDialogChip(smoothChip, selectedStyle == ContourRenderStyle.SMOOTH, palette, density, palette.paperSoft)
+            styleDialogChip(blockChip, selectedStyle == ContourRenderStyle.BLOCK, palette, density, palette.paperSoft)
             levelRow.visibility = if (previewMode) View.GONE else View.VISIBLE
             hintView.setText(
                 if (previewMode) R.string.contour_preview_hint else R.string.contour_draw_hint,
@@ -158,7 +160,7 @@ internal object ContourEditorDialog {
         val levelChips = mutableListOf<Pair<Int?, TextView>>()
         fun styleLevelChips() {
             for ((lvl, chip) in levelChips) {
-                styleChip(chip, lvl == selectedLevel, palette, density)
+                styleDialogChip(chip, lvl == selectedLevel, palette, density, palette.paperSoft)
             }
         }
         levelRow.addView(
@@ -211,6 +213,7 @@ internal object ContourEditorDialog {
             initialDocument = initialDocument,
             onStrokeAdded = { stroke ->
                 strokes.add(stroke)
+                committedStrokes = strokes.toList()
                 updateActionButtons()
                 canvasView.updateState(
                     document = currentDocument(),
@@ -229,6 +232,7 @@ internal object ContourEditorDialog {
             setOnClickListener {
                 if (strokes.isNotEmpty() && !previewMode) {
                     strokes.removeAt(strokes.lastIndex)
+                    committedStrokes = strokes.toList()
                     refreshTopChips()
                 }
             }
@@ -241,6 +245,7 @@ internal object ContourEditorDialog {
             setOnClickListener {
                 if (strokes.isNotEmpty() && !previewMode) {
                     strokes.clear()
+                    committedStrokes = emptyList()
                     refreshTopChips()
                 }
             }
@@ -325,16 +330,6 @@ internal object ContourEditorDialog {
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
             setPadding((8f * density).roundToInt(), 0, (8f * density).roundToInt(), 0)
         }
-
-    private fun styleChip(chip: TextView, active: Boolean, palette: DiaryPalette, density: Float) {
-        chip.setTextColor(if (active) palette.accent else palette.text)
-        chip.paint.isFakeBoldText = active
-        chip.background = GradientDrawable().apply {
-            setColor(if (active) palette.wash else palette.paperSoft)
-            setStroke((1f * density).roundToInt(), if (active) palette.accent else palette.rule)
-            cornerRadius = 8f * density
-        }
-    }
 }
 
 @SuppressLint("ViewConstructor")
@@ -349,6 +344,11 @@ private class ContourEditorCanvas(
     private var drawLevel: Int? = null
     private var cachedStrokes: List<ContourStroke>? = null
     private var cachedHeightmap: ContourHeightmap? = null
+    private var cachedVoxels: VoxelHeightmap? = null
+    private var cachedVoxelsFor: ContourHeightmap? = null
+    private var cachedResolvedStrokes: List<ContourStroke> = initialDocument.strokes
+    private var cachedResolvedLevels: List<Int> = ContourTerrainEngine.resolveLevels(initialDocument.strokes)
+    private var activePointerId: Int = MotionEvent.INVALID_POINTER_ID
     private val activePoints = mutableListOf<Pair<Float, Float>>()
 
     private val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -396,6 +396,14 @@ private class ContourEditorCanvas(
         this.document = document
         this.preview3d = preview3d
         this.drawLevel = drawLevel
+        if (preview3d) {
+            activePoints.clear()
+            activePointerId = MotionEvent.INVALID_POINTER_ID
+        }
+        if (cachedResolvedStrokes !== document.strokes) {
+            cachedResolvedStrokes = document.strokes
+            cachedResolvedLevels = ContourTerrainEngine.resolveLevels(document.strokes)
+        }
         invalidate()
     }
 
@@ -411,7 +419,7 @@ private class ContourEditorCanvas(
 
         if (preview3d) {
             val cached = cachedHeightmap
-            val hm = if (cachedStrokes == document.strokes && cached != null) {
+            val hm = if (cachedStrokes === document.strokes && cached != null) {
                 cached
             } else {
                 ContourTerrainEngine.buildHeightmap(document.strokes).also {
@@ -419,7 +427,16 @@ private class ContourEditorCanvas(
                     cachedHeightmap = it
                 }
             }
-            Contour3DRenderer.draw(canvas, document, w, h, hm)
+            val voxels = if (document.style == ContourRenderStyle.BLOCK) {
+                if (cachedVoxelsFor !== hm) {
+                    cachedVoxels = ContourTerrainEngine.quantizeForBlocks(hm)
+                    cachedVoxelsFor = hm
+                }
+                cachedVoxels
+            } else {
+                null
+            }
+            Contour3DRenderer.draw(canvas, document, w, h, hm, voxels)
             canvas.drawRoundRect(frameRect, 8f * density, 8f * density, borderPaint)
             return
         }
@@ -446,7 +463,7 @@ private class ContourEditorCanvas(
         }
 
         // Draw committed contour strokes with their resolved elevation labels
-        val resolved = ContourTerrainEngine.resolveLevels(document.strokes)
+        val resolved = cachedResolvedLevels
         for (i in document.strokes.indices) {
             val pts = document.strokes[i].points
             if (pts.size < 2) continue
@@ -484,16 +501,21 @@ private class ContourEditorCanvas(
     @SuppressLint("ClickableViewAccessibility")
     override fun onTouchEvent(event: MotionEvent): Boolean {
         if (preview3d || width <= 0 || height <= 0) return false
-        val nx = (event.x / width.toFloat()).coerceIn(0f, 1f)
-        val ny = (event.y / height.toFloat()).coerceIn(0f, 1f)
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
+                activePointerId = event.getPointerId(0)
+                val nx = (event.getX(0) / width.toFloat()).coerceIn(0f, 1f)
+                val ny = (event.getY(0) / height.toFloat()).coerceIn(0f, 1f)
                 activePoints.clear()
                 activePoints.add(nx to ny)
                 invalidate()
             }
 
             MotionEvent.ACTION_MOVE -> {
+                val idx = event.findPointerIndex(activePointerId)
+                if (idx == -1) return true
+                val nx = (event.getX(idx) / width.toFloat()).coerceIn(0f, 1f)
+                val ny = (event.getY(idx) / height.toFloat()).coerceIn(0f, 1f)
                 val last = activePoints.lastOrNull()
                 if (last == null || hypot((nx - last.first).toDouble(), (ny - last.second).toDouble()) >= 0.012) {
                     activePoints.add(nx to ny)
@@ -501,21 +523,31 @@ private class ContourEditorCanvas(
                 }
             }
 
-            MotionEvent.ACTION_UP -> {
-                activePoints.add(nx to ny)
-                val first = activePoints.firstOrNull()
-                val hasMovement = first != null && activePoints.any {
-                    hypot((it.first - first.first).toDouble(), (it.second - first.second).toDouble()) >= 0.008
-                }
-                if (activePoints.size >= 2 && hasMovement) {
-                    onStrokeAdded(ContourStroke(activePoints.toList(), drawLevel))
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_POINTER_UP -> {
+                val actionIdx = event.actionIndex
+                if (event.getPointerId(actionIdx) != activePointerId) return true
+                val canceled = Build.VERSION.SDK_INT >= 33 &&
+                    (event.flags and MotionEvent.FLAG_CANCELED) != 0
+                if (!canceled) {
+                    val nx = (event.getX(actionIdx) / width.toFloat()).coerceIn(0f, 1f)
+                    val ny = (event.getY(actionIdx) / height.toFloat()).coerceIn(0f, 1f)
+                    activePoints.add(nx to ny)
+                    val first = activePoints.firstOrNull()
+                    val hasMovement = first != null && activePoints.any {
+                        hypot((it.first - first.first).toDouble(), (it.second - first.second).toDouble()) >= 0.008
+                    }
+                    if (activePoints.size >= 2 && hasMovement) {
+                        onStrokeAdded(ContourStroke(activePoints.toList(), drawLevel))
+                    }
                 }
                 activePoints.clear()
+                activePointerId = MotionEvent.INVALID_POINTER_ID
                 invalidate()
             }
 
             MotionEvent.ACTION_CANCEL -> {
                 activePoints.clear()
+                activePointerId = MotionEvent.INVALID_POINTER_ID
                 invalidate()
             }
         }

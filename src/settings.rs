@@ -244,13 +244,25 @@ impl DiaryPlugin {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AppSettings {
     pub theme: ThemeMode,
     pub toolbar: ToolbarMode,
     pub date_format: DateFormat,
     pub plugin_hanzi: bool,
     pub plugin_contour: bool,
+}
+
+impl Default for AppSettings {
+    fn default() -> Self {
+        Self {
+            theme: ThemeMode::default(),
+            toolbar: ToolbarMode::default(),
+            date_format: DateFormat::default(),
+            plugin_hanzi: true,
+            plugin_contour: false,
+        }
+    }
 }
 
 impl AppSettings {
@@ -446,22 +458,22 @@ mod tests {
     #[test]
     fn toggles_plugins_and_encodes_bitmask() {
         let mut settings = AppSettings::default();
-        assert!(!settings.is_plugin_enabled(DiaryPlugin::Hanzi));
-        assert!(!settings.is_plugin_enabled(DiaryPlugin::Contour3d));
-        assert_eq!(settings.plugins_mask(), 0);
-
-        settings.toggle_plugin(DiaryPlugin::Hanzi);
         assert!(settings.is_plugin_enabled(DiaryPlugin::Hanzi));
+        assert!(!settings.is_plugin_enabled(DiaryPlugin::Contour3d));
         assert_eq!(settings.plugins_mask(), DiaryPlugin::BIT_HANZI);
 
+        settings.toggle_plugin(DiaryPlugin::Hanzi);
+        assert!(!settings.is_plugin_enabled(DiaryPlugin::Hanzi));
+        assert_eq!(settings.plugins_mask(), 0);
+
         settings.toggle_plugin(DiaryPlugin::Contour3d);
+        assert_eq!(settings.plugins_mask(), DiaryPlugin::BIT_CONTOUR_3D);
+
+        settings.toggle_plugin(DiaryPlugin::Hanzi);
         assert_eq!(
             settings.plugins_mask(),
             DiaryPlugin::BIT_HANZI | DiaryPlugin::BIT_CONTOUR_3D
         );
-
-        settings.toggle_plugin(DiaryPlugin::Hanzi);
-        assert_eq!(settings.plugins_mask(), DiaryPlugin::BIT_CONTOUR_3D);
     }
 
     #[test]

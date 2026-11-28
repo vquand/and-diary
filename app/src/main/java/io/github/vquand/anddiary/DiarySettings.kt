@@ -151,11 +151,8 @@ internal object DiarySettings {
 
     fun pluginsMask(context: Context): Int {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        return prefs.getInt(KEY_PLUGINS, 0)
+        return prefs.getInt(KEY_PLUGINS, DiaryPlugin.HANZI.bit)
     }
-
-    fun isPluginEnabled(context: Context, plugin: DiaryPlugin): Boolean =
-        isPluginEnabled(pluginsMask(context), plugin)
 
     fun isPluginEnabled(mask: Int, plugin: DiaryPlugin): Boolean =
         (mask and plugin.bit) != 0

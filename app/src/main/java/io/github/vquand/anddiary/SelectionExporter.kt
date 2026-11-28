@@ -209,7 +209,7 @@ internal object SelectionExporter {
         fun styleFormatChips() {
             for ((fmt, chip) in formatChips) {
                 val active = fmt == selectedFormat
-                styleChip(chip, active, palette, density)
+                styleDialogChip(chip, active, palette, density)
             }
             updateNote()
         }
@@ -238,7 +238,7 @@ internal object SelectionExporter {
         fun styleBgChips() {
             for ((bg, chip) in bgChips) {
                 val active = bg == selectedBackground
-                styleChip(chip, active, palette, density)
+                styleDialogChip(chip, active, palette, density)
             }
             updateNote()
         }
@@ -489,14 +489,20 @@ internal object SelectionExporter {
         LinearLayout.LayoutParams.MATCH_PARENT,
         LinearLayout.LayoutParams.WRAP_CONTENT,
     ).apply { bottomMargin = bottomPx }
+}
 
-    private fun styleChip(chip: TextView, active: Boolean, palette: DiaryPalette, density: Float) {
-        chip.setTextColor(if (active) palette.accent else palette.text)
-        chip.paint.isFakeBoldText = active
-        chip.background = GradientDrawable().apply {
-            setColor(if (active) palette.wash else palette.paper)
-            setStroke((1f * density).roundToInt(), if (active) palette.accent else palette.rule)
-            cornerRadius = 8f * density
-        }
+internal fun styleDialogChip(
+    chip: TextView,
+    active: Boolean,
+    palette: DiaryPalette,
+    density: Float,
+    inactiveColor: Int = palette.paper,
+) {
+    chip.setTextColor(if (active) palette.accent else palette.text)
+    chip.paint.isFakeBoldText = active
+    chip.background = GradientDrawable().apply {
+        setColor(if (active) palette.wash else inactiveColor)
+        setStroke((1f * density).roundToInt(), if (active) palette.accent else palette.rule)
+        cornerRadius = 8f * density
     }
 }

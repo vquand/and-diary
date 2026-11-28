@@ -14,23 +14,25 @@ import java.io.File
 import java.io.FileNotFoundException
 import java.io.IOException
 import java.time.LocalDate
+import kotlin.concurrent.withLock
 
 internal class InkEntry(
     context: Context,
     val date: LocalDate,
     private val brushes: DiaryBrushes,
 ) {
+    private val state = DayState.of(date)
     private val file = AtomicFile(File(context.filesDir, "entries/$date.ink"))
 
-    fun read(): List<Stroke> {
+    fun read(): List<Stroke> = state.lock.withLock {
         val raw = try {
             file.readFully()
         } catch (error: FileNotFoundException) {
             if (file.baseFile.exists()) throw error
-            return emptyList()
+            return@withLock emptyList()
         }
 
-        return decodeRecords(raw).map { record ->
+        decodeRecords(raw).map { record ->
             val family = when (record.brushKind) {
                 PEN -> brushes.penFamily
                 SOFT_BRUSH -> brushes.softBrushFamily
@@ -43,31 +45,33 @@ internal class InkEntry(
     }
 
     fun write(strokes: List<Stroke>) {
-        if (strokes.isEmpty()) {
-            file.delete()
-            if (file.baseFile.exists()) throw IOException("Could not remove empty diary entry")
-            return
-        }
+        state.lock.withLock {
+            if (strokes.isEmpty()) {
+                file.delete()
+                if (file.baseFile.exists()) throw IOException("Could not remove empty diary entry")
+                return
+            }
 
-        val records = strokes.map { stroke ->
-            val brush = stroke.brush
-            RawStrokeRecord(
-                brushKind = brushes.storageCodeFor(brush.family),
-                colorArgb = brush.colorIntArgb,
-                size = brush.size,
-                epsilon = brush.epsilon,
-                payload = stroke.inputs.encode(),
-            )
-        }
-        val stream = file.startWrite()
-        try {
-            val output = DataOutputStream(stream.buffered())
-            encodeRecords(output, records)
-            output.flush()
-            file.finishWrite(stream)
-        } catch (error: Exception) {
-            file.failWrite(stream)
-            throw error
+            val records = strokes.map { stroke ->
+                val brush = stroke.brush
+                RawStrokeRecord(
+                    brushKind = brushes.storageCodeFor(brush.family),
+                    colorArgb = brush.colorIntArgb,
+                    size = brush.size,
+                    epsilon = brush.epsilon,
+                    payload = stroke.inputs.encode(),
+                )
+            }
+            val stream = file.startWrite()
+            try {
+                val output = DataOutputStream(stream.buffered())
+                encodeRecords(output, records)
+                output.flush()
+                file.finishWrite(stream)
+            } catch (error: Exception) {
+                file.failWrite(stream)
+                throw error
+            }
         }
     }
 

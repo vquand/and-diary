@@ -166,7 +166,7 @@ internal object ContourTerrainEngine {
             ).toFloat()
         }
         if (perimeter < 0.08f) return false
-        return gap <= 0.16f || gap <= perimeter * 0.22f
+        return (gap <= 0.16f && gap <= perimeter * 0.35f) || gap <= perimeter * 0.22f
     }
 
     fun polygonArea(points: List<Pair<Float, Float>>): Float {
@@ -178,23 +178,6 @@ internal object ContourTerrainEngine {
             j = i
         }
         return abs(sum * 0.5).toFloat()
-    }
-
-    fun pointInPolygon(x: Float, y: Float, polygon: List<Pair<Float, Float>>): Boolean {
-        if (polygon.size < 3) return false
-        var inside = false
-        var j = polygon.lastIndex
-        for (i in polygon.indices) {
-            val xi = polygon[i].first
-            val yi = polygon[i].second
-            val xj = polygon[j].first
-            val yj = polygon[j].second
-            val intersects = ((yi > y) != (yj > y)) &&
-                (x < (xj - xi) * (y - yi) / ((yj - yi).takeIf { it != 0f } ?: 1e-6f) + xi)
-            if (intersects) inside = !inside
-            j = i
-        }
-        return inside
     }
 
     /**
@@ -211,12 +194,20 @@ internal object ContourTerrainEngine {
             if (explicit != null) {
                 explicit.coerceIn(0, 12)
             } else {
-                val sample = representativePoint(strokes[i].points)
+                val pts = strokes[i].points
+                val mid = representativePoint(pts)
                 var depth = 0
                 for (j in strokes.indices) {
                     if (i == j || !closed[j]) continue
                     if (closed[i] && areas[j] <= areas[i] * 1.02f) continue
-                    if (pointInPolygon(sample.first, sample.second, strokes[j].points)) {
+                    val inside = if (closed[i] || pts.size < 2) {
+                        LassoGeometry.pointInPolygon(mid.first, mid.second, strokes[j].points)
+                    } else {
+                        LassoGeometry.pointInPolygon(pts.first().first, pts.first().second, strokes[j].points) &&
+                            LassoGeometry.pointInPolygon(mid.first, mid.second, strokes[j].points) &&
+                            LassoGeometry.pointInPolygon(pts.last().first, pts.last().second, strokes[j].points)
+                    }
+                    if (inside) {
                         depth++
                     }
                 }
@@ -424,7 +415,7 @@ internal object ContourTerrainEngine {
                 if (i == j || !closed[j]) continue
                 if (areas[j] >= areas[i]) continue
                 val pt = representativePoint(strokes[j].points)
-                if (pointInPolygon(pt.first, pt.second, strokes[i].points)) {
+                if (LassoGeometry.pointInPolygon(pt.first, pt.second, strokes[i].points)) {
                     hasInnerLoop = true
                     break
                 }
@@ -444,7 +435,7 @@ internal object ContourTerrainEngine {
                     val idx = gy * cols + gx
                     if (fixed[idx]) continue
                     val nx = gx.toFloat() / (cols - 1).toFloat()
-                    if (pointInPolygon(nx, ny, poly)) {
+                    if (LassoGeometry.pointInPolygon(nx, ny, poly)) {
                         insideMask[idx] = true
                         if (gx < minGx) minGx = gx
                         if (gx > maxGx) maxGx = gx
@@ -520,14 +511,8 @@ internal object ContourTerrainEngine {
     }
 
     private fun representativePoint(points: List<Pair<Float, Float>>): Pair<Float, Float> {
-        var sx = 0f
-        var sy = 0f
-        for ((x, y) in points) {
-            sx += x
-            sy += y
-        }
-        val n = points.size.coerceAtLeast(1)
-        return (sx / n) to (sy / n)
+        if (points.isEmpty()) return 0f to 0f
+        return points[points.size / 2]
     }
 
     private fun isNearBorder(pt: Pair<Float, Float>): Boolean =

@@ -114,15 +114,17 @@ class DiaryCoreTests {
                 ),
             )
 
-            PaperItemsStore.pruneUnusedMediaInDir(dir, activeItems, protectedRefs = setOf("inflight.mp4"))
+            val state = DayState.of(java.time.LocalDate.of(2026, 11, 28))
+            MediaPrune.prune(state, dir, { activeItems }, retained = setOf("inflight.mp4"))
             assertTrue(keepActive.exists())
             assertTrue(keepPending.exists())
             assertFalse(orphan.exists())
 
             // Once no items or pending refs remain, the directory itself is removed.
-            PaperItemsStore.pruneUnusedMediaInDir(dir, emptyList())
+            MediaPrune.prune(state, dir, { emptyList() })
             assertFalse(dir.exists())
         } finally {
+            DayState.resetForTests()
             dir.deleteRecursively()
         }
     }
@@ -762,10 +764,11 @@ class DiaryCoreTests {
             val decoded = PaperItemsStore.decodeItemsJson(PaperItemsStore.encodeItemsJson(listOf(item)))
             assertEquals(listOf(item), decoded)
 
-            PaperItemsStore.pruneUnusedMediaInDir(dir, listOf(item))
+            MediaPrune.prune(DayState.of(java.time.LocalDate.of(2026, 11, 28)), dir, { listOf(item) })
             assertTrue(activeFile.exists())
             assertFalse(oldRevision.exists())
         } finally {
+            DayState.resetForTests()
             dir.deleteRecursively()
         }
     }
@@ -793,5 +796,238 @@ class DiaryCoreTests {
         // Overhead near center: cells on both sides converge toward 0.5f.
         val overhead = Contour3DRenderer.painterOrder(4, 0.5f).toList()
         assertEquals(listOf(0, 1, 3, 2), overhead)
+    }
+
+    @Test
+    fun contourTerrainEngineHandlesOpenShortArcsConcaveWrapsAndMixedLevels() {
+        // Short straight open stroke with gap == perimeter (< 0.16) must stay open, not closed.
+        val shortLine = ContourStroke(
+            listOf(0.20f to 0.20f, 0.24f to 0.20f, 0.28f to 0.20f, 0.32f to 0.20f),
+        )
+        assertFalse(ContourTerrainEngine.isClosedLoop(shortLine.points))
+
+        // Concave C-shaped open arc wrapping around an inner closed hill:
+        // its midpoint is outside the hill, so the hill stays higher than the outer arc.
+        val outerArc = ContourStroke(
+            listOf(
+                0.25f to 0.25f,
+                0.75f to 0.25f,
+                0.75f to 0.75f,
+                0.25f to 0.75f,
+            ),
+        )
+        assertFalse(ContourTerrainEngine.isClosedLoop(outerArc.points))
+        val innerHill = ContourStroke(
+            listOf(
+                0.42f to 0.42f,
+                0.58f to 0.42f,
+                0.58f to 0.58f,
+                0.42f to 0.58f,
+                0.42f to 0.42f,
+            ),
+        )
+        assertTrue(ContourTerrainEngine.isClosedLoop(innerHill.points))
+        // Explicit level combined with auto strokes.
+        val explicitRidge = ContourStroke(
+            listOf(0.48f to 0.48f, 0.52f to 0.52f),
+            explicitLevel = 4,
+        )
+
+        val levels = ContourTerrainEngine.resolveLevels(listOf(outerArc, innerHill, explicitRidge))
+        assertEquals(listOf(1, 1, 4), levels)
+
+        // An open stroke wholly enclosed inside a closed loop rises by nesting depth.
+        val enclosedArc = ContourStroke(
+            listOf(0.46f to 0.48f, 0.50f to 0.50f, 0.54f to 0.52f),
+        )
+        assertEquals(listOf(1, 2), ContourTerrainEngine.resolveLevels(listOf(innerHill, enclosedArc)))
+    }
+
+    @Test
+    fun contour3DRendererSampleCoordsCoversEndpointsAndSteps() {
+        assertArrayEquals(intArrayOf(0, 1), Contour3DRenderer.sampleCoords(size = 2, step = 1))
+        assertArrayEquals(intArrayOf(0, 1), Contour3DRenderer.sampleCoords(size = 2, step = 2))
+        assertArrayEquals(intArrayOf(0, 1, 2, 3), Contour3DRenderer.sampleCoords(size = 4, step = 1))
+        assertArrayEquals(intArrayOf(0, 2, 3), Contour3DRenderer.sampleCoords(size = 4, step = 2))
+        assertArrayEquals(intArrayOf(0, 2, 4), Contour3DRenderer.sampleCoords(size = 5, step = 2))
+    }
+
+    @Test
+    fun backgroundItemSaveLogicChecksStalenessAndMergesItems() {
+        assertTrue(BackgroundItemSaveLogic.isSaveStillValid(startClearGen = 2, currentClearGen = 2))
+        assertFalse(BackgroundItemSaveLogic.isSaveStillValid(startClearGen = 2, currentClearGen = 3))
+        assertTrue(BackgroundItemSaveLogic.isSaveStillValid(startClearGen = 1, currentClearGen = 1, expectedToken = 7L, activeToken = 7L))
+        assertFalse(BackgroundItemSaveLogic.isSaveStillValid(startClearGen = 1, currentClearGen = 1, expectedToken = 7L, activeToken = 8L))
+        assertFalse(BackgroundItemSaveLogic.isSaveStillValid(startClearGen = 1, currentClearGen = 1, expectedToken = 7L, activeToken = null))
+
+        val original = PaperItem(
+            id = "contour-1",
+            kind = PaperItemKind.CONTOUR,
+            ref = "old.contour.json",
+            label = "smooth",
+            durationMs = 2L,
+            x = 24f,
+            y = 48f,
+            width = 200f,
+            height = 150f,
+            score = 0,
+            rotation = 15f,
+        )
+        val edited = original.copy(
+            ref = "new.contour.json",
+            label = "block",
+            durationMs = 5L,
+            x = 999f,
+            rotation = 0f,
+        )
+        val mergedUpdate = BackgroundItemSaveLogic.mergeItemIntoList(listOf(original), "contour-1", edited)
+        assertNotNull(mergedUpdate)
+        assertEquals(1, mergedUpdate!!.size)
+        assertEquals("new.contour.json", mergedUpdate.single().ref)
+        assertEquals("block", mergedUpdate.single().label)
+        assertEquals(5L, mergedUpdate.single().durationMs)
+        assertEquals(24f, mergedUpdate.single().x)
+        assertEquals(15f, mergedUpdate.single().rotation)
+        assertNull(BackgroundItemSaveLogic.mergeItemIntoList(listOf(original), "deleted-id", edited))
+
+        val extra = original.copy(id = "photo-2", kind = PaperItemKind.PHOTO, ref = "p.webp")
+        val mergedAdd = BackgroundItemSaveLogic.mergeItemIntoList(listOf(original), null, extra)
+        assertEquals(listOf(original, extra), mergedAdd)
+    }
+
+    @Test
+    fun sharedPendingImportsProtectInflightFilesAcrossStoreInstances() {
+        val dir = Files.createTempDirectory("diary-shared-pending").toFile()
+        val date = java.time.LocalDate.of(2026, 11, 28)
+        DayState.resetForTests()
+        try {
+            val inflight = File(dir, "inflight.contour.json").apply { writeText("{}") }
+            val inflightTmp = File(dir, "inflight.contour.json.new").apply { writeText("{}") }
+            val obsolete = File(dir, "obsolete.webp").apply { writeText("old") }
+            val state = DayState.of(date)
+
+            state.protect(inflight.name)
+            MediaPrune.prune(state, dir, { emptyList() }, emptySet())
+
+            assertTrue(inflight.exists())
+            assertTrue(inflightTmp.exists())
+            assertFalse(obsolete.exists())
+            assertTrue(dir.exists())
+
+            // Empty directory must not be deleted while an import for that date is still protected.
+            inflight.delete()
+            inflightTmp.delete()
+            MediaPrune.prune(state, dir, { emptyList() }, emptySet())
+            assertTrue(dir.exists())
+
+            state.release(inflight.name)
+            assertTrue(state.protectedSnapshot().isEmpty())
+            MediaPrune.prune(state, dir, { emptyList() }, emptySet())
+            assertFalse(dir.exists())
+        } finally {
+            DayState.resetForTests()
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun lassoGeometryDetectsDuplicateStrokeSamples() {
+        assertTrue(LassoGeometry.isDuplicateStrokeSample(1451.99f, 921.366f, 44L, 1451.99f, 921.366f, 44L))
+        assertFalse(LassoGeometry.isDuplicateStrokeSample(1451.99f, 921.366f, 44L, 1452.00f, 921.366f, 44L))
+        assertFalse(LassoGeometry.isDuplicateStrokeSample(1451.99f, 921.366f, 44L, 1451.99f, 921.367f, 44L))
+        assertFalse(LassoGeometry.isDuplicateStrokeSample(1451.99f, 921.366f, 44L, 1451.99f, 921.366f, 45L))
+    }
+
+    @Test
+    fun lassoGeometryLayoutsAndHitTestsDeleteConfirmPill() {
+        val density = 2f
+        val boxRight = 500f
+        val boxTop = 200f
+        val pill = LassoGeometry.deleteConfirmPillBounds(boxRight, boxTop, density, minLeft = 4f * density)
+
+        assertEquals(boxRight - 18f * density, pill.right, 0.01f)
+        assertTrue(pill.left > 0f)
+        assertEquals(pill.splitX - pill.left, pill.right - pill.splitX, 0.01f)
+
+        assertEquals(
+            LassoGeometry.DeleteConfirmHit.OK,
+            LassoGeometry.hitTestDeleteConfirmPill((pill.left + pill.splitX) / 2f, boxTop, pill, slopPx = 8f),
+        )
+        assertEquals(
+            LassoGeometry.DeleteConfirmHit.NOT_OK,
+            LassoGeometry.hitTestDeleteConfirmPill((pill.splitX + pill.right) / 2f, boxTop, pill, slopPx = 8f),
+        )
+        assertNull(
+            LassoGeometry.hitTestDeleteConfirmPill(boxRight, boxTop, pill, slopPx = 8f),
+        )
+
+        // When close to left sheet edge, flip right of [x] rather than clipping off-screen.
+        val flipped = LassoGeometry.deleteConfirmPillBounds(boxRight = 60f, boxTop = 200f, density = density, minLeft = 4f * density)
+        assertEquals(60f + 18f * density, flipped.left, 0.01f)
+
+        // When a contour with an edit gear on the left is shrunk narrow, lift the pill above corner handles.
+        val boxLeft = 200f
+        val lifted = LassoGeometry.deleteConfirmPillBounds(
+            boxRight = 260f,
+            boxTop = 200f,
+            density = density,
+            minLeft = 4f * density,
+            minInlineLeft = boxLeft + 20f * density,
+        )
+        assertTrue(lifted.bottom < boxTop - 12f * density)
+        assertEquals(
+            LassoGeometry.DeleteConfirmHit.OK,
+            LassoGeometry.hitTestDeleteConfirmPill((lifted.left + lifted.splitX) / 2f, (lifted.top + lifted.bottom) / 2f, lifted, slopPx = 8f),
+        )
+
+        // When a narrow contour is also near the top edge, drop the pill below the top handles instead.
+        val dropped = LassoGeometry.deleteConfirmPillBounds(
+            boxRight = 260f,
+            boxTop = 10f,
+            density = density,
+            minLeft = 4f * density,
+            minInlineLeft = boxLeft + 20f * density,
+        )
+        assertTrue(dropped.top > 10f + 12f * density)
+
+        // When scrolled (offset > 0), minTop tracks the viewport top rather than page y = 0.
+        val scrollOffset = 500f
+        val boxTopScrolled = scrollOffset + 10f
+        val droppedWhenScrolled = LassoGeometry.deleteConfirmPillBounds(
+            boxRight = 260f,
+            boxTop = boxTopScrolled,
+            density = density,
+            minLeft = 4f * density,
+            minInlineLeft = boxLeft + 20f * density,
+            minTop = scrollOffset + 4f * density,
+        )
+        assertTrue(droppedWhenScrolled.top > boxTopScrolled + 12f * density)
+
+        // Rotated items pass minTop = -Infinity so lifting is not suppressed by scroll offset.
+        val liftedRotated = LassoGeometry.deleteConfirmPillBounds(
+            boxRight = 260f,
+            boxTop = boxTopScrolled,
+            density = density,
+            minLeft = Float.NEGATIVE_INFINITY,
+            minInlineLeft = boxLeft + 20f * density,
+            minTop = Float.NEGATIVE_INFINITY,
+        )
+        assertTrue(liftedRotated.bottom < boxTopScrolled - 12f * density)
+    }
+
+    @Test
+    fun scrubberScansOnlyCanonicalCommittedEntryNames() {
+        val days = DayScrubberPill.scanSavedDayNames(
+            arrayOf(
+                "2024-02-29.ink",
+                "2026-11-28.items",
+                "2026-11-28.ink.new",
+                "2026-11-28.items.bak",
+                "2025-02-29.ink",
+                "2024-2-9.ink",
+                "notes.txt",
+            ),
+        )
+        assertEquals(setOf("2024-02-29", "2026-11-28"), days)
     }
 }

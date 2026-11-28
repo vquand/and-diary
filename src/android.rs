@@ -22,12 +22,51 @@ use jni::{
 use std::{
     cell::Cell,
     collections::{BTreeMap, BTreeSet},
-    path::PathBuf,
+    path::{Path, PathBuf},
     rc::Rc,
-    sync::Mutex,
+    sync::{
+        LazyLock, Mutex,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
 };
 
 static PENDING_DATE: Mutex<Option<NaiveDate>> = Mutex::new(None);
+static PENDING_DAYS_REFRESH: AtomicBool = AtomicBool::new(false);
+static LOADED_DAYS: Mutex<Option<(BTreeSet<NaiveDate>, BTreeSet<NaiveDate>)>> = Mutex::new(None);
+static DAYS_SCAN_TX: LazyLock<mpsc::Sender<PathBuf>> = LazyLock::new(|| {
+    let (tx, rx) = mpsc::channel::<PathBuf>();
+    let _ = std::thread::Builder::new()
+        .name("diary-days-scan".to_string())
+        .spawn(move || {
+            while let Ok(mut dir) = rx.recv() {
+                while let Ok(newer) = rx.try_recv() {
+                    dir = newer;
+                }
+                let saved = calendar::saved_days(&dir);
+                let hanzi = calendar::completed_hanzi_days(&dir);
+                if let Ok(mut slot) = LOADED_DAYS.lock() {
+                    *slot = Some((saved, hanzi));
+                }
+                if let Some(window) =
+                    android_jni::platform().and_then(|platform| platform.primary_window())
+                {
+                    window.request_frame();
+                }
+            }
+        });
+    tx
+});
+
+fn request_days_scan(directory: &Path) {
+    let _ = DAYS_SCAN_TX.send(directory.to_path_buf());
+}
+
+fn clear_pending_date() {
+    if let Ok(mut pending) = PENDING_DATE.lock() {
+        *pending = None;
+    }
+}
 
 const INK_VIEW: &str = "diary_ink";
 const HEADER_HEIGHT: f32 = 56.;
@@ -80,12 +119,13 @@ impl Diary {
         let today = Local::now().date_naive();
         let scroll = UniformListScrollHandle::new();
         scroll.scroll_to_item_strict(calendar::month_index(today), ScrollStrategy::Center);
+        request_days_scan(&directory);
         Self {
             entry: None,
             return_date: None,
             show_settings: false,
-            saved_days: Rc::new(calendar::saved_days(&directory)),
-            hanzi_days: Rc::new(calendar::completed_hanzi_days(&directory)),
+            saved_days: Rc::new(BTreeSet::new()),
+            hanzi_days: Rc::new(BTreeSet::new()),
             directory,
             pins: Rc::new(pins::load(&pin_directory)),
             pin_directory,
@@ -115,16 +155,18 @@ impl Diary {
     }
 
     fn calendar(&mut self, cx: &mut Context<Self>) {
+        clear_pending_date();
+        PENDING_DAYS_REFRESH.store(false, Ordering::Release);
         self.entry = None;
         self.return_date = None;
         self.show_settings = false;
-        self.saved_days = Rc::new(calendar::saved_days(&self.directory));
-        self.hanzi_days = Rc::new(calendar::completed_hanzi_days(&self.directory));
+        request_days_scan(&self.directory);
         self.today = Local::now().date_naive();
         cx.notify();
     }
 
     fn open_day(&mut self, date: NaiveDate, cx: &mut Context<Self>) {
+        clear_pending_date();
         self.show_settings = false;
         self.return_date = None;
         self.entry = Some(DaySheet {
@@ -138,6 +180,7 @@ impl Diary {
     }
 
     fn navigate_day(&mut self, date: NaiveDate, cx: &mut Context<Self>) {
+        clear_pending_date();
         if let Some(entry) = &mut self.entry {
             if entry.date == date {
                 return;
@@ -151,6 +194,7 @@ impl Diary {
     }
 
     fn open_settings(&mut self, cx: &mut Context<Self>) {
+        clear_pending_date();
         self.return_date = self.entry.as_ref().map(|entry| entry.date);
         self.entry = None;
         self.pin_picker = None;
@@ -206,6 +250,15 @@ impl Render for Diary {
             && let Some(entry) = &mut self.entry
         {
             entry.date = synced;
+        }
+        if self.entry.is_none() && !self.show_settings {
+            if PENDING_DAYS_REFRESH.swap(false, Ordering::AcqRel) {
+                request_days_scan(&self.directory);
+            }
+            if let Some((saved, hanzi)) = LOADED_DAYS.lock().ok().and_then(|mut slot| slot.take()) {
+                self.saved_days = Rc::new(saved);
+                self.hanzi_days = Rc::new(hanzi);
+            }
         }
 
         let [left, top, right, bottom] = android_jni::platform()
@@ -759,6 +812,17 @@ pub extern "system" fn Java_io_github_vquand_anddiary_DiaryActivity_nativeOnDate
         {
             window.request_frame();
         }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_io_github_vquand_anddiary_DiaryActivity_nativeOnDayWritten(
+    _env: jni::EnvUnowned<'_>,
+    _class: jni::objects::JClass<'_>,
+) {
+    PENDING_DAYS_REFRESH.store(true, Ordering::Release);
+    if let Some(window) = android_jni::platform().and_then(|platform| platform.primary_window()) {
+        window.request_frame();
     }
 }
 

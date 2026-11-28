@@ -71,7 +71,11 @@ pub fn load(directory: &Path) -> BTreeMap<NaiveDate, Pin> {
             if path.extension()?.to_str()? != "pin" || entry.metadata().ok()?.len() != 1 {
                 return None;
             }
-            let date = NaiveDate::parse_from_str(path.file_stem()?.to_str()?, "%Y-%m-%d").ok()?;
+            let stem = path.file_stem()?.to_str()?;
+            let date = NaiveDate::parse_from_str(stem, "%Y-%m-%d").ok()?;
+            if date.to_string() != stem {
+                return None;
+            }
             let data = fs::read(path).ok()?;
             let pin = Pin::ALL.into_iter().find(|pin| data == [*pin as u8])?;
             Some((date, pin))
@@ -122,6 +126,10 @@ mod tests {
 
         save(&directory, first, None).unwrap();
         save(&directory, first, None).unwrap();
+        assert_eq!(load(&directory), BTreeMap::from([(second, Pin::Sun)]));
+
+        fs::write(directory.join("2026-2-9.pin"), [Pin::Star as u8]).unwrap();
+        fs::write(directory.join("2026-11-25.pin.tmp"), [Pin::Star as u8]).unwrap();
         assert_eq!(load(&directory), BTreeMap::from([(second, Pin::Sun)]));
         for pin in Pin::ALL {
             save(&directory, first, Some(pin)).unwrap();

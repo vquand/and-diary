@@ -73,6 +73,7 @@
     <string name="clear_day_message">Delete all writing on this date? This cannot be undone.</string>
     <string name="ink_empty">This day is already empty.</string>
     <string name="ink_load_failed">This diary entry could not be loaded.</string>
+    <string name="day_still_loading">This diary entry is still loading.</string>
     <string name="ink_save_failed">This change could not be saved.</string>
     <string name="quick_tag_format">#%1$s</string>
     <string name="hanzi_initial_status">Write stroke 1 of %1$d — or tap Animate</string>
