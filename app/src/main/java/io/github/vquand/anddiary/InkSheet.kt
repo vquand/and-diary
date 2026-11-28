@@ -64,9 +64,11 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
     private var entry = InkEntry(context, date, brushes)
     private var itemsStore = PaperItemsStore(context, date)
     private var isSwitchingDate = false
+    @Volatile private var sheetAttached = false
+    @Volatile private var activeSheetDate: LocalDate = date
     private val mainHandler = Handler(Looper.getMainLooper())
-    private val clearGenerations = mutableMapOf<LocalDate, Int>()
-    private val contourSaveTokens = mutableMapOf<Pair<LocalDate, String>, Long>()
+    private val clearGenerations = ConcurrentHashMap<LocalDate, Int>()
+    private val contourSaveTokens = ConcurrentHashMap<Pair<LocalDate, String>, Long>()
     private var nextContourToken = 1L
     private fun clearGenerationOf(date: LocalDate) = clearGenerations[date] ?: 0
     private val paper = Paper()
@@ -313,12 +315,11 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
         clearDialog?.dismiss()
         paper.cancelGesture()
 
-        val previousStore = itemsStore
-        val previousItems = paper.currentItems()
         val forward = targetDate.isAfter(currentDate)
         val applyNewDate = {
-            pruneUnusedMediaAsync(previousStore, previousItems)
+            pruneUnusedMediaAsync(itemsStore, paper.currentItems())
             currentDate = targetDate
+            activeSheetDate = targetDate
             entry = InkEntry(context, targetDate, brushes)
             itemsStore = PaperItemsStore(context, targetDate)
             paper.reloadForCurrentDate()
@@ -377,7 +378,16 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
             }
     }
 
+    override fun onAttachedToWindow() {
+        super.onAttachedToWindow()
+        sheetAttached = true
+        activeSheetDate = currentDate
+        attachedSheets.add(this)
+    }
+
     override fun onDetachedFromWindow() {
+        sheetAttached = false
+        attachedSheets.remove(this)
         paper.cancelGesture()
         paper.animate().cancel()
         paper.translationX = 0f
@@ -462,117 +472,158 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
         val centerY = paper.viewportCenterY()
         val maxWidth = paper.maxNewItemWidth()
         val existingId = existingItem?.id
-        val tokenKey = existingId?.let { targetDate to it }
+        enqueueBackgroundItemSave(
+            targetDate = targetDate,
+            targetStore = targetStore,
+            startGen = startGen,
+            existingItemId = existingId,
+            failureLogTag = "DiaryContour",
+            failureLogMessage = "Could not save contour terrain",
+            failureToastRes = R.string.contour_save_failed,
+        ) {
+            val item = if (existingItem != null) {
+                targetStore.updateContour(existingItem, document)
+            } else {
+                targetStore.createContour(document, centerX, centerY, maxWidth, density)
+            }
+            val hm = precomputedHeightmap ?: ContourTerrainEngine.buildHeightmap(document.strokes)
+            val vox = precomputedVoxels ?: if (document.style == ContourRenderStyle.BLOCK) {
+                ContourTerrainEngine.quantizeForBlocks(hm)
+            } else {
+                null
+            }
+            val rendered = Contour3DRenderer.render(
+                document = document,
+                widthPx = 800,
+                heightPx = 600,
+                heightmap = hm,
+                voxels = vox,
+            )
+            targetStore.cacheBitmap(item, rendered)
+            item to PreloadedContour(document, hm, vox)
+        }
+    }
+
+    private fun enqueueBackgroundItemSave(
+        targetDate: LocalDate,
+        targetStore: PaperItemsStore,
+        startGen: Int,
+        existingItemId: String?,
+        failureLogTag: String,
+        failureLogMessage: String,
+        failureToastRes: Int,
+        work: () -> Pair<PaperItem, PreloadedContour?>,
+    ) {
+        val tokenKey = existingItemId?.let { targetDate to it }
         val saveToken = tokenKey?.let { key ->
             val token = nextContourToken++
             contourSaveTokens[key] = token
             token
         }
-        ioExecutor.execute {
+        val previousWrite = pendingEntryWrites[targetDate]
+        pendingEntryWrites[targetDate] = ioExecutor.submit {
+            runCatching { previousWrite?.get() }
             var createdItem: PaperItem? = null
             try {
-                val item = if (existingItem != null) {
-                    targetStore.updateContour(existingItem, document)
-                } else {
-                    targetStore.createContour(document, centerX, centerY, maxWidth, density)
-                }
+                val (item, preloaded) = work()
                 createdItem = item
-                if (precomputedHeightmap != null) {
-                    val rendered = Contour3DRenderer.render(
-                        document = document,
-                        widthPx = 800,
-                        heightPx = 600,
-                        heightmap = precomputedHeightmap,
-                        voxels = precomputedVoxels,
-                    )
-                    targetStore.cacheBitmap(item, rendered)
-                } else {
-                    targetStore.loadBitmap(item)
+                if (clearGenerationOf(targetDate) != startGen ||
+                    (tokenKey != null && saveToken != null && contourSaveTokens[tokenKey] != saveToken)
+                ) {
+                    if (tokenKey != null && saveToken != null) {
+                        contourSaveTokens.remove(tokenKey, saveToken)
+                    }
+                    runCatching { targetStore.mediaFile(item).delete() }
+                    targetStore.clearPendingImport(item.ref)
+                    return@submit
                 }
-                commitBackgroundItem(
-                    targetDate = targetDate,
-                    targetStore = targetStore,
-                    startGen = startGen,
-                    existingItemId = existingId,
-                    saveToken = saveToken,
-                    item = item,
-                )
+                if (!sheetAttached || activeSheetDate != targetDate) {
+                    if (tokenKey != null && saveToken != null && !contourSaveTokens.remove(tokenKey, saveToken)) {
+                        runCatching { targetStore.mediaFile(item).delete() }
+                        targetStore.clearPendingImport(item.ref)
+                        return@submit
+                    }
+                    writeItemUpdateToDisk(targetDate, targetStore, existingItemId, item)
+                } else {
+                    mainHandler.post {
+                        if (tokenKey != null && saveToken != null) {
+                            if (!contourSaveTokens.remove(tokenKey, saveToken)) {
+                                ioExecutor.execute {
+                                    runCatching { targetStore.mediaFile(item).delete() }
+                                    targetStore.clearPendingImport(item.ref)
+                                }
+                                return@post
+                            }
+                        }
+                        if (existingItemId != null) {
+                            paper.clearFinalizingContourPreview(existingItemId)
+                        }
+                        if (clearGenerationOf(targetDate) != startGen) {
+                            ioExecutor.execute {
+                                runCatching { targetStore.mediaFile(item).delete() }
+                                targetStore.clearPendingImport(item.ref)
+                            }
+                        } else if (isAttachedToWindow && currentDate == targetDate) {
+                            if (existingItemId != null) {
+                                paper.replaceContourContent(existingItemId, item.ref, item.label, item.durationMs, preloaded)
+                            } else {
+                                paper.addImportedItem(item, preloaded)
+                            }
+                            targetStore.clearPendingImport(item.ref)
+                        } else {
+                            pendingEntryWrites[targetDate] = ioExecutor.submit {
+                                writeItemUpdateToDisk(targetDate, targetStore, existingItemId, item)
+                            }
+                        }
+                    }
+                }
             } catch (error: Exception) {
                 createdItem?.let {
                     runCatching { targetStore.mediaFile(it).delete() }
                     targetStore.clearPendingImport(it.ref)
                 }
-                Log.e("DiaryContour", "Could not save contour terrain", error)
+                Log.e(failureLogTag, failureLogMessage, error)
                 mainHandler.post {
-                    if (tokenKey != null && contourSaveTokens[tokenKey] == saveToken) {
-                        contourSaveTokens.remove(tokenKey)
-                        paper.clearFinalizingContourPreview(existingId)
+                    if (tokenKey != null && saveToken != null && contourSaveTokens.remove(tokenKey, saveToken)) {
+                        existingItemId?.let { paper.clearFinalizingContourPreview(it) }
                     }
-                    Toast.makeText(context, R.string.contour_save_failed, Toast.LENGTH_LONG).show()
+                    Toast.makeText(context, failureToastRes, Toast.LENGTH_LONG).show()
                 }
             }
         }
     }
 
-    private fun commitBackgroundItem(
+    private fun writeItemUpdateToDisk(
         targetDate: LocalDate,
         targetStore: PaperItemsStore,
-        startGen: Int,
         existingItemId: String?,
-        saveToken: Long?,
         item: PaperItem,
     ) {
-        mainHandler.post {
-            val tokenKey = existingItemId?.let { targetDate to it }
-            if (tokenKey != null && saveToken != null) {
-                if (contourSaveTokens[tokenKey] != saveToken) {
-                    ioExecutor.execute {
-                        runCatching { targetStore.mediaFile(item).delete() }
-                        targetStore.clearPendingImport(item.ref)
-                    }
-                    return@post
-                }
-                contourSaveTokens.remove(tokenKey)
-            }
-            if (existingItemId != null) {
-                paper.clearFinalizingContourPreview(existingItemId)
-            }
-            if (clearGenerationOf(targetDate) != startGen) {
-                ioExecutor.execute {
-                    runCatching { targetStore.mediaFile(item).delete() }
-                    targetStore.clearPendingImport(item.ref)
-                }
-            } else if (isAttachedToWindow && currentDate == targetDate) {
-                if (existingItemId != null) {
-                    paper.replaceContourContent(existingItemId, item.ref, item.label, item.durationMs)
-                } else {
-                    paper.addImportedItem(item)
-                }
-                targetStore.clearPendingImport(item.ref)
-            } else {
-                // Tracked like stroke writes so switching back to that date waits for it before reading.
-                pendingEntryWrites[targetDate] = ioExecutor.submit {
-                    try {
-                        runCatching {
-                            val existing = targetStore.read()
-                            val next = if (existingItemId != null) {
-                                existing.map { current ->
-                                    if (current.id == existingItemId) {
-                                        current.copy(ref = item.ref, label = item.label, durationMs = item.durationMs)
-                                    } else {
-                                        current
-                                    }
-                                }
-                            } else {
-                                existing + item
-                            }
-                            targetStore.write(next)
+        try {
+            runCatching {
+                val existing = targetStore.read()
+                val next = if (existingItemId != null) {
+                    existing.map { current ->
+                        if (current.id == existingItemId) {
+                            current.copy(ref = item.ref, label = item.label, durationMs = item.durationMs)
+                        } else {
+                            current
                         }
-                    } finally {
-                        targetStore.clearPendingImport(item.ref)
+                    }
+                } else {
+                    existing + item
+                }
+                targetStore.write(next)
+            }
+            mainHandler.post {
+                for (sheet in attachedSheets) {
+                    if (sheet.isAttachedToWindow && sheet.currentDate == targetDate) {
+                        sheet.paper.reloadItemsFromDiskIfNeeded()
                     }
                 }
             }
+        } finally {
+            targetStore.clearPendingImport(item.ref)
         }
     }
 
@@ -703,22 +754,18 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
         val centerX = paper.viewportCenterX()
         val centerY = paper.viewportCenterY()
         val maxWidth = paper.maxNewItemWidth()
-        ioExecutor.execute {
-            try {
-                val item = targetStore.importMedia(uri, kind, centerX, centerY, maxWidth, density)
-                targetStore.loadBitmap(item)
-                commitBackgroundItem(
-                    targetDate = targetDate,
-                    targetStore = targetStore,
-                    startGen = startGen,
-                    existingItemId = null,
-                    saveToken = null,
-                    item = item,
-                )
-            } catch (error: Exception) {
-                Log.e("DiaryMedia", "Could not import media", error)
-                mainHandler.post { Toast.makeText(context, R.string.media_import_failed, Toast.LENGTH_LONG).show() }
-            }
+        enqueueBackgroundItemSave(
+            targetDate = targetDate,
+            targetStore = targetStore,
+            startGen = startGen,
+            existingItemId = null,
+            failureLogTag = "DiaryMedia",
+            failureLogMessage = "Could not import media",
+            failureToastRes = R.string.media_import_failed,
+        ) {
+            val item = targetStore.importMedia(uri, kind, centerX, centerY, maxWidth, density)
+            targetStore.loadBitmap(item)
+            item to null
         }
     }
 
@@ -1200,7 +1247,7 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
             }
         }
 
-        fun addImportedItem(item: PaperItem) {
+        fun addImportedItem(item: PaperItem, preloaded: PreloadedContour? = null) {
             val previous = HistorySnapshot(strokes, items)
             if (commitChange(previous, strokes, items + item)) {
                 selectedItemIds = setOf(item.id)
@@ -1209,19 +1256,45 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                 activeTool = DiaryTool.SELECT
                 updateToolbar()
                 if (item.kind == PaperItemKind.CONTOUR) {
-                    preloadContourAsync(item)
+                    if (preloaded != null) {
+                        preloadedContours[item.ref] = preloaded
+                    } else {
+                        preloadContourAsync(item)
+                    }
                 }
                 invalidate()
             }
         }
 
-        fun replaceContourContent(itemId: String, ref: String, label: String, durationMs: Long) {
+        fun replaceContourContent(
+            itemId: String,
+            ref: String,
+            label: String,
+            durationMs: Long,
+            preloaded: PreloadedContour? = null,
+        ) {
             val current = items.firstOrNull { it.id == itemId } ?: return
             val updatedItem = current.copy(ref = ref, label = label, durationMs = durationMs)
             val previous = HistorySnapshot(strokes, items)
             val updated = items.map { if (it.id == itemId) updatedItem else it }
             if (commitChange(previous, strokes, updated)) {
+                preloadedContours.remove(current.ref)
+                if (preloaded != null) {
+                    preloadedContours[ref] = preloaded
+                }
                 recomputeSelectionBounds()
+                invalidate()
+            }
+        }
+
+        fun reloadItemsFromDiskIfNeeded() {
+            if (!readable || contourOrbit != null || itemDrag != null || areaDrag != null || twoFinger != null) return
+            val diskItems = runCatching { itemsStore.read() }.getOrNull() ?: return
+            if (diskItems != items) {
+                items = diskItems
+                persistedItems = diskItems
+                recomputeSelectionBounds()
+                preloadMediaBitmaps()
                 invalidate()
             }
         }
@@ -2438,6 +2511,7 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
             Thread(runnable, "DiaryMediaIO").apply { isDaemon = true }
         }
         val pendingEntryWrites = ConcurrentHashMap<LocalDate, Future<*>>()
+        val attachedSheets = mutableSetOf<InkSheet>()
 
         fun awaitPendingWrite(date: LocalDate) {
             val future = pendingEntryWrites.remove(date) ?: return
