@@ -1021,6 +1021,8 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
         var erasedAny: Boolean = false,
     )
     private enum class DragMode { MOVE, RESIZE }
+    private enum class TopHandleAction { CLOSE, DELETE, CONFIRM_OK, CONFIRM_NOT_OK }
+    private enum class HistoryAction { UNDO, REDO }
     private data class ItemDrag(
         val pointerId: Int,
         val itemId: String,
@@ -1132,6 +1134,8 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
         private var selectedStrokeIndices: Set<Int> = emptySet()
         private var selectionBounds: RectF? = null
         private var liveTransform: SelectionTransform? = null
+        private var confirmingDelete = false
+        private var pendingHistoryAction: HistoryAction? = null
         private val undoStack = ArrayDeque<HistorySnapshot>()
         private val redoStack = ArrayDeque<HistorySnapshot>()
         private val finishing = mutableMapOf<InProgressStrokeId, FinishingStroke>()
@@ -1211,9 +1215,10 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                             byPreviousEntry.getOrPut(owner) { mutableListOf() }.add(stroke)
                         }
                     }
+                    var commitOk = true
                     if (currentCompleted.isNotEmpty()) {
                         val previous = HistorySnapshot(this@Paper.strokes, items)
-                        commitChange(previous, this@Paper.strokes + currentCompleted, items)
+                        commitOk = commitChange(previous, this@Paper.strokes + currentCompleted, items)
                     }
                     for ((owner, oldStrokes) in byPreviousEntry) {
                         val oldEntry = owner.entry
@@ -1237,6 +1242,17 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                         }
                     }
                     ink.removeFinishedStrokes(strokes.keys)
+                    if (isAttachedToWindow && readable && finishing.values.none { it.entry.date == entry.date }) {
+                        val pendingAction = pendingHistoryAction
+                        pendingHistoryAction = null
+                        if (commitOk) {
+                            when (pendingAction) {
+                                HistoryAction.UNDO -> undo()
+                                HistoryAction.REDO -> redo()
+                                null -> Unit
+                            }
+                        }
+                    }
                 }
             })
         }
@@ -1245,6 +1261,7 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
             val seq = ++loadSeq
             loading = true
             readable = false
+            pendingHistoryAction = null
             if (!initial) cancelGesture()
             loadingBitmaps.clear()
             preloadedContours.clear()
@@ -1253,6 +1270,7 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
             selectedStrokeIndices = emptySet()
             selectionBounds = null
             liveTransform = null
+            confirmingDelete = false
             undoStack.clear()
             redoStack.clear()
             offset = 0f
@@ -1443,11 +1461,12 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                 ?: finalizingContourPreviews[itemId]
 
         fun clearSelection() {
-            if (hasSelection || liveTransform != null) {
+            if (hasSelection || liveTransform != null || confirmingDelete) {
                 selectedItemIds = emptySet()
                 selectedStrokeIndices = emptySet()
                 selectionBounds = null
                 liveTransform = null
+                confirmingDelete = false
                 invalidate()
             }
         }
@@ -1511,6 +1530,7 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
             } else {
                 selectedItemIds = emptySet()
                 selectedStrokeIndices = emptySet()
+                confirmingDelete = false
                 null
             }
         }
@@ -1575,6 +1595,7 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
             if (!commitChange(previous, strokes, items + item)) return false
             selectedItemIds = setOf(item.id)
             selectedStrokeIndices = emptySet()
+            confirmingDelete = false
             recomputeSelectionBounds()
             activeTool = DiaryTool.SELECT
             updateToolbar()
@@ -1736,8 +1757,21 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                     itemRenderer.drawItem(canvas, item, itemsStore, mediaPlayback.playingAudioId, orbitBitmapFor(item.id), ::requestItemBitmap)
                 }
                 for (stroke in strokes) renderer.draw(canvas, stroke, identity)
-                singleSelectedItem()?.let { itemRenderer.drawSelectionHandles(canvas, it, showCornerHandles = contourOrbit?.itemId != it.id) }
-                    ?: selectionBounds?.let { itemRenderer.drawAreaSelectionHandles(canvas, it, selectionAllowsResize()) }
+                singleSelectedItem()?.let {
+                    itemRenderer.drawSelectionHandles(
+                        canvas,
+                        it,
+                        showCornerHandles = contourOrbit?.itemId != it.id,
+                        confirmingDelete = confirmingDelete,
+                    )
+                } ?: selectionBounds?.let {
+                    itemRenderer.drawAreaSelectionHandles(
+                        canvas,
+                        it,
+                        selectionAllowsResize(),
+                        confirmingDelete = confirmingDelete,
+                    )
+                }
             }
             lassoing?.let { active ->
                 itemRenderer.drawLassoPath(canvas, active.points)
@@ -1812,12 +1846,14 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                     val shouldDraw = !shouldErase && activeTool != DiaryTool.SELECT && (stylus || fingerAllowed)
 
                     if (drawing == null && erasing == null && shouldErase) {
+                        pendingHistoryAction = null
                         cancelGesture()
                         clearSelection()
                         erasing = Erasing(pointer, paperX, paperY, strokes)
                         eraseSegment(paperX, paperY, paperX, paperY)
                         invalidate()
                     } else if (drawing == null && erasing == null && shouldDraw) {
+                        pendingHistoryAction = null
                         cancelGesture()
                         requestUnbufferedDispatch(event)
                         viewToPaper.setTranslate(0f, offset)
@@ -2186,6 +2222,7 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
             scrolling = null
             mediaTap = null
             pendingDeselectPointerId = null
+            confirmingDelete = false
             liveTransform = null
 
             val x1 = event.getX(0)
@@ -2270,6 +2307,7 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
 
             selectedStrokeIndices = hitStrokes
             selectedItemIds = hitItems
+            confirmingDelete = false
             recomputeSelectionBounds()
         }
 
@@ -2388,16 +2426,34 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
             rotationDeg: Float,
         ): Stroke {
             val inputs = stroke.inputs
+            if (inputs.isEmpty()) return stroke
             val batch = MutableStrokeInputBatch()
             batch.setNoiseSeed(inputs.getNoiseSeed())
             val scratch = StrokeInput()
             val pt = FloatArray(2)
             val rotRad = Math.toRadians(rotationDeg.toDouble()).toFloat()
+            var hasPrev = false
+            var prevX = 0f
+            var prevY = 0f
+            var prevElapsed = 0L
             for (i in 0 until inputs.size) {
                 inputs.populate(i, scratch)
                 pt[0] = scratch.x
                 pt[1] = scratch.y
                 matrix.mapPoints(pt)
+                if (!pt[0].isFinite() || !pt[1].isFinite()) continue
+                if (hasPrev &&
+                    LassoGeometry.isDuplicateStrokeSample(
+                        prevX = prevX,
+                        prevY = prevY,
+                        prevElapsedMillis = prevElapsed,
+                        x = pt[0],
+                        y = pt[1],
+                        elapsedMillis = scratch.elapsedTimeMillis,
+                    )
+                ) {
+                    continue
+                }
                 val orientation = if (scratch.hasOrientation) {
                     LassoGeometry.wrapOrientation(scratch.orientationRadians + rotRad)
                 } else {
@@ -2419,7 +2475,12 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                     orientation,
                 )
                 batch.add(scratch)
+                hasPrev = true
+                prevX = pt[0]
+                prevY = pt[1]
+                prevElapsed = scratch.elapsedTimeMillis
             }
+            if (batch.isEmpty()) return stroke
             val oldBrush = stroke.brush
             val newSize = (oldBrush.size * scale).coerceIn(1f, 200f * density)
             val newBrush = Brush.createWithColorIntArgb(
@@ -2429,6 +2490,70 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                 oldBrush.epsilon,
             )
             return Stroke(newBrush, batch.toImmutable())
+        }
+
+        private fun deleteCurrentSelection() {
+            if (!hasSelection) return
+            confirmingDelete = false
+            if (mediaPlayback.playingAudioId in selectedItemIds) stopAudio()
+            val previous = HistorySnapshot(strokes, items)
+            val remainingStrokes = strokes.filterIndexed { idx, _ -> idx !in selectedStrokeIndices }
+            val remainingItems = items.filterNot { it.id in selectedItemIds }
+            if (commitChange(previous, remainingStrokes, remainingItems)) {
+                cancelContourSavesFor(previous.items, remainingItems)
+                clearSelection()
+            }
+            invalidate()
+        }
+
+        private fun hitTestTopHandles(
+            localX: Float,
+            localY: Float,
+            boxRight: Float,
+            boxTop: Float,
+            minPillLeft: Float,
+            minInlineLeft: Float,
+            distOther: Float,
+        ): TopHandleAction? {
+            val handleHitR = 22f * density
+            if (confirmingDelete) {
+                val pill = LassoGeometry.deleteConfirmPillBounds(boxRight, boxTop, density, minPillLeft, minInlineLeft)
+                when (LassoGeometry.hitTestDeleteConfirmPill(localX, localY, pill, slopPx = 4f * density)) {
+                    LassoGeometry.DeleteConfirmHit.OK -> return TopHandleAction.CONFIRM_OK
+                    LassoGeometry.DeleteConfirmHit.NOT_OK -> return TopHandleAction.CONFIRM_NOT_OK
+                    null -> Unit
+                }
+            }
+            val distClose = hypot((localX - boxRight).toDouble(), (localY - boxTop).toDouble()).toFloat()
+            val deleteCx = LassoGeometry.deleteIconCenterX(boxRight, density)
+            val distDelete = if (!confirmingDelete) {
+                hypot((localX - deleteCx).toDouble(), (localY - boxTop).toDouble()).toFloat()
+            } else {
+                Float.POSITIVE_INFINITY
+            }
+            if (distClose <= handleHitR && distClose <= distDelete && distClose <= distOther) {
+                return TopHandleAction.CLOSE
+            }
+            if (!confirmingDelete && distDelete <= handleHitR && distDelete < distClose && distDelete <= distOther) {
+                return TopHandleAction.DELETE
+            }
+            return null
+        }
+
+        private fun applyTopHandleAction(action: TopHandleAction): Boolean {
+            when (action) {
+                TopHandleAction.CLOSE -> clearSelection()
+                TopHandleAction.DELETE -> {
+                    confirmingDelete = true
+                    invalidate()
+                }
+                TopHandleAction.CONFIRM_OK -> deleteCurrentSelection()
+                TopHandleAction.CONFIRM_NOT_OK -> {
+                    confirmingDelete = false
+                    invalidate()
+                }
+            }
+            return true
         }
 
         private fun handleSelectDown(pointer: Int, paperX: Float, paperY: Float): Boolean {
@@ -2444,7 +2569,6 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                 val top = single.y - pad
                 val bottom = single.y + single.height + pad
 
-                val distDelete = hypot((localX - right).toDouble(), (localY - top).toDouble()).toFloat()
                 val distResize = if (single.kind != PaperItemKind.AUDIO) {
                     hypot((localX - right).toDouble(), (localY - bottom).toDouble()).toFloat()
                 } else {
@@ -2455,18 +2579,14 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                 } else {
                     Float.POSITIVE_INFINITY
                 }
+                val minPillLeft = if (single.rotation != 0f) Float.NEGATIVE_INFINITY else 4f * density
+                val minInlineLeft = if (single.kind == PaperItemKind.CONTOUR) left + 20f * density else Float.NEGATIVE_INFINITY
+                hitTestTopHandles(localX, localY, right, top, minPillLeft, minInlineLeft, minOf(distResize, distEdit))
+                    ?.let { return applyTopHandleAction(it) }
 
-                // Pick the closer handle when handles overlap within hit radius
-                if (distDelete <= handleHitR && distDelete <= distResize && distDelete <= distEdit) {
-                    if (mediaPlayback.playingAudioId == single.id) stopAudio()
-                    val previous = HistorySnapshot(strokes, items)
-                    val remaining = items.filterNot { it.id == single.id }
-                    if (commitChange(previous, strokes, remaining)) {
-                        cancelContourSavesFor(previous.items, remaining)
-                        clearSelection()
-                    }
+                if (confirmingDelete) {
+                    confirmingDelete = false
                     invalidate()
-                    return true
                 }
 
                 if (distEdit <= handleHitR && distEdit <= distResize) {
@@ -2497,25 +2617,18 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                     val top = bounds.top - pad
                     val bottom = bounds.bottom + pad
 
-                    val distDelete = hypot((paperX - right).toDouble(), (paperY - top).toDouble()).toFloat()
                     val distResize = if (selectionAllowsResize()) {
                         hypot((paperX - right).toDouble(), (paperY - bottom).toDouble()).toFloat()
                     } else {
                         Float.POSITIVE_INFINITY
                     }
 
-                    // Pick the closer handle when both are within hit radius
-                    if (distDelete <= handleHitR && distDelete <= distResize) {
-                        if (mediaPlayback.playingAudioId in selectedItemIds) stopAudio()
-                        val previous = HistorySnapshot(strokes, items)
-                        val remainingStrokes = strokes.filterIndexed { idx, _ -> idx !in selectedStrokeIndices }
-                        val remainingItems = items.filterNot { it.id in selectedItemIds }
-                        if (commitChange(previous, remainingStrokes, remainingItems)) {
-                            cancelContourSavesFor(previous.items, remainingItems)
-                            clearSelection()
-                        }
+                    hitTestTopHandles(paperX, paperY, right, top, 4f * density, Float.NEGATIVE_INFINITY, distResize)
+                        ?.let { return applyTopHandleAction(it) }
+
+                    if (confirmingDelete) {
+                        confirmingDelete = false
                         invalidate()
-                        return true
                     }
 
                     if (distResize <= handleHitR) {
@@ -2615,6 +2728,7 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
         }
 
         fun cancelGesture() {
+            pendingHistoryAction = null
             cancelPendingOrbit()
             if (contourOrbit != null) {
                 contourOrbit = null
@@ -2793,7 +2907,10 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
         }
 
         fun undo() {
-            if (finishing.values.any { it.entry.date == entry.date }) return
+            if (finishing.values.any { it.entry.date == entry.date }) {
+                pendingHistoryAction = HistoryAction.UNDO
+                return
+            }
             val previous = undoStack.removeLastOrNull() ?: return
             val current = HistorySnapshot(strokes, items)
             if (save(previous.strokes, previous.items)) {
@@ -2807,7 +2924,10 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
         }
 
         fun redo() {
-            if (finishing.values.any { it.entry.date == entry.date }) return
+            if (finishing.values.any { it.entry.date == entry.date }) {
+                pendingHistoryAction = HistoryAction.REDO
+                return
+            }
             val next = redoStack.removeLastOrNull() ?: return
             val current = HistorySnapshot(strokes, items)
             if (save(next.strokes, next.items)) {
@@ -2821,6 +2941,7 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
         }
 
         fun clearDay() {
+            pendingHistoryAction = null
             val state = DayState.of(currentDate)
             // Clear and bump the generation in ONE critical section so an off-sheet merge cannot slip in between.
             val cleared = state.lock.withLock {

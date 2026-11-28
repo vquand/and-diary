@@ -29,6 +29,12 @@ use std::{
 
 static PENDING_DATE: Mutex<Option<NaiveDate>> = Mutex::new(None);
 
+fn clear_pending_date() {
+    if let Ok(mut pending) = PENDING_DATE.lock() {
+        *pending = None;
+    }
+}
+
 const INK_VIEW: &str = "diary_ink";
 const HEADER_HEIGHT: f32 = 56.;
 // Sentinel bounds that never match PlatformViewRegistry::hit_test while header scrubbing is active,
@@ -115,6 +121,7 @@ impl Diary {
     }
 
     fn calendar(&mut self, cx: &mut Context<Self>) {
+        clear_pending_date();
         self.entry = None;
         self.return_date = None;
         self.show_settings = false;
@@ -125,6 +132,7 @@ impl Diary {
     }
 
     fn open_day(&mut self, date: NaiveDate, cx: &mut Context<Self>) {
+        clear_pending_date();
         self.show_settings = false;
         self.return_date = None;
         self.entry = Some(DaySheet {
@@ -151,6 +159,7 @@ impl Diary {
     }
 
     fn open_settings(&mut self, cx: &mut Context<Self>) {
+        clear_pending_date();
         self.return_date = self.entry.as_ref().map(|entry| entry.date);
         self.entry = None;
         self.pin_picker = None;

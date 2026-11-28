@@ -180,10 +180,6 @@ internal class PaperItemsStore(private val context: Context, val date: LocalDate
         synchronized(failedMedia) { failedMedia.clear() }
     }
 
-    fun deleteMediaDir() {
-        mediaDir.deleteRecursively()
-    }
-
     fun clearPendingImport(filename: String) {
         state.release(filename)
     }

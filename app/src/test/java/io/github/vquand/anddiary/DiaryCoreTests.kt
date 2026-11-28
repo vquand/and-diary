@@ -926,4 +926,65 @@ class DiaryCoreTests {
             dir.deleteRecursively()
         }
     }
+
+    @Test
+    fun lassoGeometryDetectsDuplicateStrokeSamples() {
+        assertTrue(LassoGeometry.isDuplicateStrokeSample(1451.99f, 921.366f, 44L, 1451.99f, 921.366f, 44L))
+        assertFalse(LassoGeometry.isDuplicateStrokeSample(1451.99f, 921.366f, 44L, 1452.00f, 921.366f, 44L))
+        assertFalse(LassoGeometry.isDuplicateStrokeSample(1451.99f, 921.366f, 44L, 1451.99f, 921.367f, 44L))
+        assertFalse(LassoGeometry.isDuplicateStrokeSample(1451.99f, 921.366f, 44L, 1451.99f, 921.366f, 45L))
+    }
+
+    @Test
+    fun lassoGeometryLayoutsAndHitTestsDeleteConfirmPill() {
+        val density = 2f
+        val boxRight = 500f
+        val boxTop = 200f
+        val pill = LassoGeometry.deleteConfirmPillBounds(boxRight, boxTop, density, minLeft = 4f * density)
+
+        assertEquals(boxRight - 18f * density, pill.right, 0.01f)
+        assertTrue(pill.left > 0f)
+        assertEquals(pill.splitX - pill.left, pill.right - pill.splitX, 0.01f)
+
+        assertEquals(
+            LassoGeometry.DeleteConfirmHit.OK,
+            LassoGeometry.hitTestDeleteConfirmPill((pill.left + pill.splitX) / 2f, boxTop, pill, slopPx = 8f),
+        )
+        assertEquals(
+            LassoGeometry.DeleteConfirmHit.NOT_OK,
+            LassoGeometry.hitTestDeleteConfirmPill((pill.splitX + pill.right) / 2f, boxTop, pill, slopPx = 8f),
+        )
+        assertNull(
+            LassoGeometry.hitTestDeleteConfirmPill(boxRight, boxTop, pill, slopPx = 8f),
+        )
+
+        // When close to left sheet edge, flip right of [x] rather than clipping off-screen.
+        val flipped = LassoGeometry.deleteConfirmPillBounds(boxRight = 60f, boxTop = 200f, density = density, minLeft = 4f * density)
+        assertEquals(60f + 18f * density, flipped.left, 0.01f)
+
+        // When a contour with an edit gear on the left is shrunk narrow, lift the pill above corner handles.
+        val boxLeft = 200f
+        val lifted = LassoGeometry.deleteConfirmPillBounds(
+            boxRight = 260f,
+            boxTop = 200f,
+            density = density,
+            minLeft = 4f * density,
+            minInlineLeft = boxLeft + 20f * density,
+        )
+        assertTrue(lifted.bottom < boxTop - 12f * density)
+        assertEquals(
+            LassoGeometry.DeleteConfirmHit.OK,
+            LassoGeometry.hitTestDeleteConfirmPill((lifted.left + lifted.splitX) / 2f, (lifted.top + lifted.bottom) / 2f, lifted, slopPx = 8f),
+        )
+
+        // When a narrow contour is also near the top edge, drop the pill below the top handles instead.
+        val dropped = LassoGeometry.deleteConfirmPillBounds(
+            boxRight = 260f,
+            boxTop = 10f,
+            density = density,
+            minLeft = 4f * density,
+            minInlineLeft = boxLeft + 20f * density,
+        )
+        assertTrue(dropped.top > 10f + 12f * density)
+    }
 }

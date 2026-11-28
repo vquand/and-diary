@@ -120,7 +120,13 @@ internal class DayScrubberPill(
     private fun scanSavedDays(): Set<String> {
         val days = HashSet<String>()
         for (name in entriesDir.list().orEmpty()) {
-            if (name.endsWith(".ink") || name.endsWith(".items")) days.add(name.substringBeforeLast('.'))
+            val stem = when {
+                name.endsWith(".ink") -> name.removeSuffix(".ink")
+                name.endsWith(".items") -> name.removeSuffix(".items")
+                else -> continue
+            }
+            val parsed = runCatching { LocalDate.parse(stem) }.getOrNull() ?: continue
+            if (parsed.toString() == stem) days.add(stem)
         }
         return days
     }
