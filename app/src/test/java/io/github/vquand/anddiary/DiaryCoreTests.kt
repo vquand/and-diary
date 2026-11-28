@@ -1169,4 +1169,78 @@ class DiaryCoreTests {
             dir.deleteRecursively()
         }
     }
+
+    @Test
+    fun kineticScrollerProducesSubPixelMonotonicDeceleratingCurveAndStopsAtBounds() {
+        val spec = KineticScroller.createFling(
+            startOffset = 100f,
+            velocityPxPerSec = 2400f,
+            minOffset = 0f,
+            maxOffset = 2000f,
+            pixelsPerInch = 320f,
+            startTimeNanos = 1_000_000_000L,
+        )!!
+        assertTrue(spec.durationNanos > 200_000_000L)
+        assertTrue(spec.totalDistance > 100f)
+
+        var prev = spec.startOffset
+        var hasSubPixelStep = false
+        val steps = 20
+        for (i in 1 until steps) {
+            val t = spec.startTimeNanos + spec.durationNanos * i / steps
+            val (off, done) = spec.offsetAt(t)
+            assertFalse("Should not finish mid-curve at step $i", done)
+            assertTrue("Offset must increase monotonically ($prev -> $off)", off > prev)
+            if (off != off.toInt().toFloat()) {
+                hasSubPixelStep = true
+            }
+            prev = off
+        }
+        assertTrue("Expected sub-pixel float offsets", hasSubPixelStep)
+
+        val (endOff, endDone) = spec.offsetAt(spec.startTimeNanos + spec.durationNanos)
+        assertTrue(endDone)
+        assertEquals(spec.startOffset + spec.totalDistance, endOff, 0.01f)
+
+        // Clamps cleanly and marks finished when hitting bottom boundary.
+        val edgeSpec = KineticScroller.createFling(
+            startOffset = 950f,
+            velocityPxPerSec = 4000f,
+            minOffset = 0f,
+            maxOffset = 1000f,
+            pixelsPerInch = 320f,
+            startTimeNanos = 0L,
+        )!!
+        val (clamped, hitEdge) = edgeSpec.offsetAt(edgeSpec.durationNanos / 2L)
+        assertEquals(1000f, clamped, 0.001f)
+        assertTrue(hitEdge)
+
+        // Cannot fling further past an already-reached boundary.
+        assertNull(
+            KineticScroller.createFling(
+                startOffset = 0f,
+                velocityPxPerSec = -1000f,
+                minOffset = 0f,
+                maxOffset = 1000f,
+                pixelsPerInch = 320f,
+                startTimeNanos = 0L,
+            ),
+        )
+
+        // Upward fling decreases offset monotonically and clamps cleanly at minOffset.
+        val upSpec = KineticScroller.createFling(
+            startOffset = 500f,
+            velocityPxPerSec = -2400f,
+            minOffset = 0f,
+            maxOffset = 1000f,
+            pixelsPerInch = 320f,
+            startTimeNanos = 0L,
+        )!!
+        val (midUp, midUpDone) = upSpec.offsetAt(upSpec.durationNanos / 20L)
+        assertFalse(midUpDone)
+        assertTrue("Expected upward offset < 500f, got $midUp", midUp < 500f && midUp > 0f)
+        val (clampedUp, hitTop) = upSpec.offsetAt(upSpec.durationNanos)
+        assertEquals(0f, clampedUp, 0.001f)
+        assertTrue(hitTop)
+    }
 }

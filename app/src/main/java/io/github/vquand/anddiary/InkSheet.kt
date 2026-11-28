@@ -17,10 +17,13 @@ import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import android.util.TypedValue
+import android.view.Choreographer
 import android.view.Gravity
 import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
+import android.view.VelocityTracker
 import android.view.View
+import android.view.ViewConfiguration
 import android.view.ViewGroup
 import android.view.animation.AccelerateInterpolator
 import android.view.animation.DecelerateInterpolator
@@ -1220,6 +1223,15 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
         private var pendingDeselectPointerId: Int? = null
         private var offset = 0f
         private var sheetHeight = 0f
+        private val viewConfig = ViewConfiguration.get(context)
+        private val minFlingVelocity = viewConfig.scaledMinimumFlingVelocity.toFloat()
+        private val maxFlingVelocity = viewConfig.scaledMaximumFlingVelocity.toFloat()
+        private var velocityTracker: VelocityTracker? = null
+        private var lastScrollMoveEventTimeMs = 0L
+        private var activeFling: KineticScroller.FlingSpec? = null
+        private val flingFrameCallback = Choreographer.FrameCallback { frameTimeNanos ->
+            stepFling(frameTimeNanos)
+        }
 
         init {
             setWillNotDraw(false)
@@ -1851,6 +1863,7 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
 
         override fun onSizeChanged(width: Int, height: Int, oldWidth: Int, oldHeight: Int) {
             super.onSizeChanged(width, height, oldWidth, oldHeight)
+            stopFling()
             sheetHeight = maxOf(sheetHeight, height * 2f)
             offset = offset.coerceIn(0f, maxOffset())
         }
@@ -1866,6 +1879,15 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
 
             val restore = canvas.save()
             canvas.translate(0f, -offset)
+            val strokeMargin = 32f * density
+            val visibleTop = offset - strokeMargin
+            val visibleBottom = offset + height + strokeMargin
+            fun drawVisibleStroke(stroke: Stroke) {
+                val box = stroke.shape.computeBoundingBox()
+                if (box == null || (box.yMax >= visibleTop && box.yMin <= visibleBottom)) {
+                    renderer.draw(canvas, stroke, identity)
+                }
+            }
             val transform = liveTransform
             if (transform != null && hasSelection) {
                 for (item in items) {
@@ -1875,7 +1897,7 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                 }
                 for (i in strokes.indices) {
                     if (i !in selectedStrokeIndices) {
-                        renderer.draw(canvas, strokes[i], identity)
+                        drawVisibleStroke(strokes[i])
                     }
                 }
                 transform.fillMatrix(liveMatrix)
@@ -1915,7 +1937,7 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                 for (item in items) {
                     itemRenderer.drawItem(canvas, item, itemsStore, mediaPlayback.playingAudioId, orbitBitmapFor(item.id), ::requestItemBitmap)
                 }
-                for (stroke in strokes) renderer.draw(canvas, stroke, identity)
+                for (stroke in strokes) drawVisibleStroke(stroke)
                 singleSelectedItem()?.let {
                     itemRenderer.drawSelectionHandles(
                         canvas,
@@ -1969,6 +1991,7 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                     val first = action == MotionEvent.ACTION_DOWN
                     val paperX = event.getX(index)
                     val paperY = event.getY(index) + offset
+                    val wasFlinging = first && tool == MotionEvent.TOOL_TYPE_FINGER && isFlinging()
                     if (first) cancelGesture()
 
                     // Two-finger rotate & scale on any active selection (single sticker/item or lasso area).
@@ -1989,15 +2012,15 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                     }
 
                     if (activeTool == DiaryTool.SELECT && first && !stylusEraser) {
-                        if (handleSelectDown(pointer, paperX, paperY)) return true
+                        if (!wasFlinging && handleSelectDown(pointer, paperX, paperY)) return true
                         if (stylus || fingerInk) {
                             // Defer clearing selection until the lasso actually drags,
                             // so a 2-finger rotate starting outside a small sticker still works.
                             lassoing = Lassoing(pointer, mutableListOf(paperX to paperY))
                             invalidate()
                         } else if (tool == MotionEvent.TOOL_TYPE_FINGER) {
-                            if (hasSelection) pendingDeselectPointerId = pointer
-                            scrolling = Scrolling(pointer, event.getY(index), offset)
+                            if (!wasFlinging && hasSelection) pendingDeselectPointerId = pointer
+                            startScrolling(pointer, event.getY(index), event)
                         }
                         return true
                     }
@@ -2021,11 +2044,13 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                         val brush = brushes.brushFor(activeTool)
                         drawing = Drawing(pointer, ink.startStroke(event, pointer, brush, viewToPaper))
                     } else if (first && tool == MotionEvent.TOOL_TYPE_FINGER) {
-                        val playable = findPlayableHit(paperX, paperY)
-                        if (playable != null) {
-                            mediaTap = MediaTap(pointer, playable, event.getX(index), event.getY(index))
+                        if (!wasFlinging) {
+                            val playable = findPlayableHit(paperX, paperY)
+                            if (playable != null) {
+                                mediaTap = MediaTap(pointer, playable, event.getX(index), event.getY(index))
+                            }
                         }
-                        scrolling = Scrolling(pointer, event.getY(index), offset)
+                        startScrolling(pointer, event.getY(index), event)
                     }
                 }
 
@@ -2200,6 +2225,8 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                         }
                     }
                     scrolling?.let { scroll ->
+                        velocityTracker?.addMovement(event)
+                        lastScrollMoveEventTimeMs = event.eventTime
                         val pointerIndex = event.findPointerIndex(scroll.pointerId)
                         if (pointerIndex != -1) {
                             val moveY = event.getY(pointerIndex)
@@ -2347,7 +2374,7 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                         }
                     }
                     if (scrolling?.pointerId == pointer) {
-                        if (canceled) cancelGesture() else scrolling = null
+                        if (canceled) cancelGesture() else finishScrollingWithFling(event, pointer)
                     }
                     if (pendingDeselectPointerId == pointer) {
                         pendingDeselectPointerId = null
@@ -2381,6 +2408,8 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
             areaDrag = null
             lassoing = null
             scrolling = null
+            recycleVelocityTracker()
+            stopFling()
             mediaTap = null
             pendingDeselectPointerId = null
             confirmingDelete = false
@@ -2919,12 +2948,83 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
             }
             mediaTap = null
             pendingDeselectPointerId = null
+            stopFling()
+            recycleVelocityTracker()
             scrolling?.let {
                 offset = it.startOffset.coerceIn(0f, maxOffset())
                 invalidate()
             }
             scrolling = null
             drainPendingBackgroundCommits()
+        }
+
+        private fun isFlinging(): Boolean = activeFling != null
+
+        private fun startScrolling(pointerId: Int, downY: Float, event: MotionEvent) {
+            stopFling()
+            scrolling = Scrolling(pointerId, downY, offset)
+            lastScrollMoveEventTimeMs = event.eventTime
+            recycleVelocityTracker()
+            velocityTracker = VelocityTracker.obtain().apply { addMovement(event) }
+        }
+
+        private fun finishScrollingWithFling(event: MotionEvent, pointerId: Int) {
+            scrolling = null
+            val tracker = velocityTracker
+            velocityTracker = null
+            if (tracker == null) return
+            try {
+                // Do not feed ACTION_UP into VelocityTracker: release events often repeat the
+                // final coordinate with a later timestamp and dilute the flick velocity.
+                val releaseGapMs = event.eventTime - lastScrollMoveEventTimeMs
+                if (releaseGapMs <= KineticScroller.RELEASE_STOPPED_GAP_MS) {
+                    tracker.computeCurrentVelocity(1000, maxFlingVelocity)
+                    val velocityY = tracker.getYVelocity(pointerId)
+                    if (abs(velocityY) >= minFlingVelocity) {
+                        startFling(-velocityY)
+                    }
+                }
+            } finally {
+                tracker.recycle()
+            }
+        }
+
+        private fun startFling(velocityY: Float) {
+            val spec = KineticScroller.createFling(
+                startOffset = offset,
+                velocityPxPerSec = velocityY,
+                minOffset = 0f,
+                maxOffset = maxOffset(),
+                pixelsPerInch = density * 160f,
+                startTimeNanos = System.nanoTime(),
+            ) ?: return
+            stopFling()
+            activeFling = spec
+            Choreographer.getInstance().postFrameCallback(flingFrameCallback)
+        }
+
+        private fun stepFling(frameTimeNanos: Long) {
+            val spec = activeFling ?: return
+            val (nextOffset, finished) = spec.offsetAt(frameTimeNanos)
+            offset = nextOffset
+            invalidate()
+            if (finished) {
+                activeFling = null
+            } else {
+                Choreographer.getInstance().postFrameCallback(flingFrameCallback)
+            }
+        }
+
+        private fun stopFling() {
+            if (activeFling != null) {
+                activeFling = null
+                Choreographer.getInstance().removeFrameCallback(flingFrameCallback)
+            }
+        }
+
+        private fun recycleVelocityTracker() {
+            velocityTracker?.recycle()
+            velocityTracker = null
         }
 
         private fun cancelPendingOrbit() {

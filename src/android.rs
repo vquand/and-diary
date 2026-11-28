@@ -8,7 +8,8 @@ use crate::{
 use chrono::{Datelike, Local, NaiveDate};
 use gpui::{
     App, Application, Context, HitboxBehavior, IntoElement, LongPressEvent, Render, ScrollStrategy,
-    TouchPhase, UniformListScrollHandle, Window, WindowOptions, canvas, div, prelude::*, px, rgb,
+    Task, TouchPhase, UniformListScrollHandle, Window, WindowOptions, canvas, div, prelude::*, px,
+    rgb,
 };
 use gpui_mobile::{
     android::{jni as android_jni, platform_view::AndroidPlatformViewFactory},
@@ -22,45 +23,16 @@ use jni::{
 use std::{
     cell::Cell,
     collections::{BTreeMap, BTreeSet},
-    path::{Path, PathBuf},
+    path::PathBuf,
     rc::Rc,
     sync::{
-        LazyLock, Mutex,
+        Mutex,
         atomic::{AtomicBool, Ordering},
-        mpsc,
     },
 };
 
 static PENDING_DATE: Mutex<Option<NaiveDate>> = Mutex::new(None);
 static PENDING_DAYS_REFRESH: AtomicBool = AtomicBool::new(false);
-static LOADED_DAYS: Mutex<Option<(BTreeSet<NaiveDate>, BTreeSet<NaiveDate>)>> = Mutex::new(None);
-static DAYS_SCAN_TX: LazyLock<mpsc::Sender<PathBuf>> = LazyLock::new(|| {
-    let (tx, rx) = mpsc::channel::<PathBuf>();
-    let _ = std::thread::Builder::new()
-        .name("diary-days-scan".to_string())
-        .spawn(move || {
-            while let Ok(mut dir) = rx.recv() {
-                while let Ok(newer) = rx.try_recv() {
-                    dir = newer;
-                }
-                let saved = calendar::saved_days(&dir);
-                let hanzi = calendar::completed_hanzi_days(&dir);
-                if let Ok(mut slot) = LOADED_DAYS.lock() {
-                    *slot = Some((saved, hanzi));
-                }
-                if let Some(window) =
-                    android_jni::platform().and_then(|platform| platform.primary_window())
-                {
-                    window.request_frame();
-                }
-            }
-        });
-    tx
-});
-
-fn request_days_scan(directory: &Path) {
-    let _ = DAYS_SCAN_TX.send(directory.to_path_buf());
-}
 
 fn clear_pending_date() {
     if let Ok(mut pending) = PENDING_DATE.lock() {
@@ -94,6 +66,7 @@ struct Diary {
     directory: PathBuf,
     saved_days: Rc<BTreeSet<NaiveDate>>,
     hanzi_days: Rc<BTreeSet<NaiveDate>>,
+    days_scan_task: Option<Task<()>>,
     pins: Rc<BTreeMap<NaiveDate, Pin>>,
     pin_directory: PathBuf,
     pin_picker: Option<(NaiveDate, bool)>,
@@ -119,13 +92,13 @@ impl Diary {
         let today = Local::now().date_naive();
         let scroll = UniformListScrollHandle::new();
         scroll.scroll_to_item_strict(calendar::month_index(today), ScrollStrategy::Center);
-        request_days_scan(&directory);
-        Self {
+        let mut diary = Self {
             entry: None,
             return_date: None,
             show_settings: false,
             saved_days: Rc::new(BTreeSet::new()),
             hanzi_days: Rc::new(BTreeSet::new()),
+            days_scan_task: None,
             directory,
             pins: Rc::new(pins::load(&pin_directory)),
             pin_directory,
@@ -134,7 +107,29 @@ impl Diary {
             settings,
             scroll,
             today,
-        }
+        };
+        diary.refresh_days(cx);
+        diary
+    }
+
+    fn refresh_days(&mut self, cx: &mut Context<Self>) {
+        let directory = self.directory.clone();
+        self.days_scan_task = Some(cx.spawn(async move |this, cx| {
+            let (saved, hanzi) = cx
+                .background_executor()
+                .spawn(async move {
+                    (
+                        calendar::saved_days(&directory),
+                        calendar::completed_hanzi_days(&directory),
+                    )
+                })
+                .await;
+            let _ = this.update(cx, |diary, cx| {
+                diary.saved_days = Rc::new(saved);
+                diary.hanzi_days = Rc::new(hanzi);
+                cx.notify();
+            });
+        }));
     }
 
     fn finish_header_scrub(&mut self, canceled: bool) -> bool {
@@ -160,7 +155,7 @@ impl Diary {
         self.entry = None;
         self.return_date = None;
         self.show_settings = false;
-        request_days_scan(&self.directory);
+        self.refresh_days(cx);
         self.today = Local::now().date_naive();
         cx.notify();
     }
@@ -251,14 +246,11 @@ impl Render for Diary {
         {
             entry.date = synced;
         }
-        if self.entry.is_none() && !self.show_settings {
-            if PENDING_DAYS_REFRESH.swap(false, Ordering::AcqRel) {
-                request_days_scan(&self.directory);
-            }
-            if let Some((saved, hanzi)) = LOADED_DAYS.lock().ok().and_then(|mut slot| slot.take()) {
-                self.saved_days = Rc::new(saved);
-                self.hanzi_days = Rc::new(hanzi);
-            }
+        if self.entry.is_none()
+            && !self.show_settings
+            && PENDING_DAYS_REFRESH.swap(false, Ordering::AcqRel)
+        {
+            self.refresh_days(cx);
         }
 
         let [left, top, right, bottom] = android_jni::platform()
