@@ -404,6 +404,10 @@ private class ContourEditorCanvas(
         this.document = document
         this.preview3d = preview3d
         this.drawLevel = drawLevel
+        if (preview3d) {
+            activePoints.clear()
+            activePointerId = MotionEvent.INVALID_POINTER_ID
+        }
         if (cachedResolvedStrokes !== document.strokes) {
             cachedResolvedStrokes = document.strokes
             cachedResolvedLevels = ContourTerrainEngine.resolveLevels(document.strokes)

@@ -897,6 +897,7 @@ class DiaryCoreTests {
         val dir = Files.createTempDirectory("diary-shared-pending").toFile()
         try {
             val inflight = File(dir, "inflight.contour.json").apply { writeText("{}") }
+            val inflightTmp = File(dir, "inflight.contour.json.new").apply { writeText("{}") }
             val obsolete = File(dir, "obsolete.webp").apply { writeText("old") }
             val key = dir.absolutePath
 
@@ -904,12 +905,20 @@ class DiaryCoreTests {
             PaperItemsStore.pruneUnusedMediaInDir(dir, emptyList(), PaperItemsStore.protectedRefsForDir(key))
 
             assertTrue(inflight.exists())
+            assertTrue(inflightTmp.exists())
             assertFalse(obsolete.exists())
+            assertTrue(dir.exists())
+
+            // Empty directory must not be deleted while an import for that dir is still protected.
+            inflight.delete()
+            inflightTmp.delete()
+            PaperItemsStore.pruneUnusedMediaInDir(dir, emptyList(), PaperItemsStore.protectedRefsForDir(key))
+            assertTrue(dir.exists())
 
             PaperItemsStore.clearPendingImportForDir(key, inflight.name)
             assertTrue(PaperItemsStore.protectedRefsForDir(key).isEmpty())
             PaperItemsStore.pruneUnusedMediaInDir(dir, emptyList(), PaperItemsStore.protectedRefsForDir(key))
-            assertFalse(inflight.exists())
+            assertFalse(dir.exists())
         } finally {
             dir.deleteRecursively()
         }

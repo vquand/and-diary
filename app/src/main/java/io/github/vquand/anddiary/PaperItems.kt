@@ -180,8 +180,11 @@ internal class PaperItemsStore(private val context: Context, val date: LocalDate
         clearPendingImportForDir(mediaDirKey, filename)
     }
 
-    fun pruneUnusedMedia(activeItems: List<PaperItem>) {
-        pruneUnusedMediaInDir(mediaDir, activeItems, protectedRefsForDir(mediaDirKey))
+    fun pruneUnusedMediaFromDisk() {
+        // Snapshot pending imports before reading .items so a commit landing in between is visible in one of the two.
+        val protectedRefs = protectedRefsForDir(mediaDirKey)
+        val activeItems = runCatching { read() }.getOrNull() ?: return
+        pruneUnusedMediaInDir(mediaDir, activeItems, protectedRefs)
     }
 
     fun mediaFile(item: PaperItem): File = File(mediaDir, item.ref)
@@ -260,8 +263,8 @@ internal class PaperItemsStore(private val context: Context, val date: LocalDate
     private fun writeContourFile(document: ContourDocument): String {
         val filename = "${UUID.randomUUID()}.contour.json"
         val destination = File(mediaDir, filename)
-        mediaDir.mkdirs()
         addPendingImportForDir(mediaDirKey, filename)
+        mediaDir.mkdirs()
         val atomic = AtomicFile(destination)
         val payload = document.toJson().toByteArray(Charsets.UTF_8)
         val stream = atomic.startWrite()
@@ -776,11 +779,12 @@ internal class PaperItemsStore(private val context: Context, val date: LocalDate
                 .mapTo(mutableSetOf()) { it.ref }
             keep.addAll(protectedRefs)
             mediaDir.listFiles()?.forEach { file ->
-                if (file.isFile && file.name !in keep) {
+                val baseName = file.name.removeSuffix(".new").removeSuffix(".bak")
+                if (file.isFile && file.name !in keep && baseName !in protectedRefs) {
                     file.delete()
                 }
             }
-            if (mediaDir.list().isNullOrEmpty()) {
+            if (protectedRefs.isEmpty() && mediaDir.list().isNullOrEmpty()) {
                 mediaDir.delete()
             }
         }

@@ -348,7 +348,7 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
         val forward = targetDate.isAfter(currentDate)
         val applyNewDate = {
             paper.cancelGesture()
-            pruneUnusedMediaAsync(itemsStore, paper.currentItems())
+            pruneUnusedMediaAsync(itemsStore)
             currentDate = targetDate
             entry = InkEntry(context, targetDate, brushes)
             itemsStore = PaperItemsStore(context, targetDate)
@@ -422,7 +422,7 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
         paper.translationX = 0f
         paper.alpha = 1f
         isSwitchingDate = false
-        pruneUnusedMediaAsync(itemsStore, paper.currentItems())
+        pruneUnusedMediaAsync(itemsStore)
         mediaPlayback.release()
         stickerDialog?.dismiss()
         stickerDialog = null
@@ -438,10 +438,9 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
         super.onDetachedFromWindow()
     }
 
-    private fun pruneUnusedMediaAsync(store: PaperItemsStore, fallbackItems: List<PaperItem>) {
+    private fun pruneUnusedMediaAsync(store: PaperItemsStore) {
         entryWriteExecutor.execute {
-            val activeItems = runCatching { store.read() }.getOrElse { fallbackItems }
-            runCatching { store.pruneUnusedMedia(activeItems) }
+            runCatching { store.pruneUnusedMediaFromDisk() }
         }
     }
 
@@ -573,18 +572,22 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                     return@execute
                 }
                 mainHandler.post {
-                    if (tokenKey != null && saveToken != null) {
-                        if (!contourSaveTokens.remove(tokenKey, saveToken)) {
-                            ioExecutor.execute {
-                                runCatching { targetStore.mediaFile(item).delete() }
-                                targetStore.clearPendingImport(item.ref)
-                            }
-                            return@post
-                        }
+                    val liveSheet = attachedSheets.firstOrNull {
+                        it.isAttachedToWindow && it.currentDate == targetDate && !it.isSwitchingDate
                     }
-                    val liveSheet = attachedSheets.firstOrNull { it.isAttachedToWindow && it.currentDate == targetDate }
-                    if (!BackgroundItemSaveLogic.isSaveStillValid(startGen, clearGenerationOf(targetDate))) {
-                        if (existingItemId != null) {
+                    if (!BackgroundItemSaveLogic.isSaveStillValid(
+                            startClearGen = startGen,
+                            currentClearGen = clearGenerationOf(targetDate),
+                            expectedToken = saveToken,
+                            activeToken = tokenKey?.let { contourSaveTokens[it] },
+                        )
+                    ) {
+                        if (tokenKey != null && saveToken != null) {
+                            contourSaveTokens.remove(tokenKey, saveToken)
+                        }
+                        if (existingItemId != null && BackgroundItemSaveLogic.isSaveStillValid(startGen, clearGenerationOf(targetDate))) {
+                            // Leave newer-token preview intact; only clear if the day itself was cleared below.
+                        } else if (existingItemId != null) {
                             paper.clearFinalizingContourPreview(existingItemId)
                             liveSheet?.paper?.clearFinalizingContourPreview(existingItemId)
                         }
@@ -598,8 +601,13 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                             existingItemId = existingItemId,
                             item = item,
                             preloaded = preloaded,
+                            tokenKey = tokenKey,
+                            saveToken = saveToken,
                         )
                     } else {
+                        if (tokenKey != null && saveToken != null) {
+                            contourSaveTokens.remove(tokenKey, saveToken)
+                        }
                         if (existingItemId != null) {
                             paper.clearFinalizingContourPreview(existingItemId)
                         }
@@ -987,6 +995,8 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
         val existingItemId: String?,
         val item: PaperItem,
         val preloaded: PreloadedContour?,
+        val tokenKey: Pair<LocalDate, String>?,
+        val saveToken: Long?,
     )
     private data class FinishingStroke(val entry: InkEntry, val clearGen: Int)
     private data class ContourOrbit(
@@ -1075,7 +1085,7 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
         private val finishing = mutableMapOf<InProgressStrokeId, FinishingStroke>()
         val hasContent: Boolean
             get() = strokes.isNotEmpty() ||
-                finishing.values.any { it.entry === entry && it.clearGen == clearGenerationOf(entry.date) } ||
+                finishing.values.any { it.entry.date == entry.date && it.clearGen == clearGenerationOf(entry.date) } ||
                 items.isNotEmpty()
         val hasSelection: Boolean get() = selectedItemIds.isNotEmpty() || selectedStrokeIndices.isNotEmpty()
         val canUndo: Boolean get() = undoStack.isNotEmpty()
@@ -1146,7 +1156,7 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                     val byPreviousEntry = mutableMapOf<FinishingStroke, MutableList<Stroke>>()
                     for ((id, stroke) in strokes) {
                         val owner = finishing.remove(id) ?: continue
-                        if (owner.entry === entry) {
+                        if (owner.entry.date == entry.date) {
                             if (owner.clearGen == clearGenerationOf(entry.date)) {
                                 currentCompleted.add(stroke)
                             }
@@ -1388,23 +1398,23 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
             }
         }
 
-        fun addImportedItem(item: PaperItem, preloaded: PreloadedContour? = null) {
+        fun addImportedItem(item: PaperItem, preloaded: PreloadedContour? = null): Boolean {
             val previous = HistorySnapshot(strokes, items)
-            if (commitChange(previous, strokes, items + item)) {
-                selectedItemIds = setOf(item.id)
-                selectedStrokeIndices = emptySet()
-                recomputeSelectionBounds()
-                activeTool = DiaryTool.SELECT
-                updateToolbar()
-                if (item.kind == PaperItemKind.CONTOUR) {
-                    if (preloaded != null) {
-                        preloadedContours[item.ref] = preloaded
-                    } else {
-                        preloadContourAsync(item)
-                    }
+            if (!commitChange(previous, strokes, items + item)) return false
+            selectedItemIds = setOf(item.id)
+            selectedStrokeIndices = emptySet()
+            recomputeSelectionBounds()
+            activeTool = DiaryTool.SELECT
+            updateToolbar()
+            if (item.kind == PaperItemKind.CONTOUR) {
+                if (preloaded != null) {
+                    preloadedContours[item.ref] = preloaded
+                } else {
+                    preloadContourAsync(item)
                 }
-                invalidate()
             }
+            invalidate()
+            return true
         }
 
         fun replaceContourContent(
@@ -1418,14 +1428,13 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
             val updatedItem = current.copy(ref = ref, label = label, durationMs = durationMs)
             val previous = HistorySnapshot(strokes, items)
             val updated = items.map { if (it.id == itemId) updatedItem else it }
-            if (commitChange(previous, strokes, updated)) {
-                preloadedContours.remove(current.ref)
-                if (preloaded != null) {
-                    preloadedContours[ref] = preloaded
-                }
-                recomputeSelectionBounds()
-                invalidate()
+            if (!commitChange(previous, strokes, updated)) return false
+            preloadedContours.remove(current.ref)
+            if (preloaded != null) {
+                preloadedContours[ref] = preloaded
             }
+            recomputeSelectionBounds()
+            invalidate()
             return true
         }
 
@@ -1434,8 +1443,10 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
             existingItemId: String?,
             item: PaperItem,
             preloaded: PreloadedContour?,
+            tokenKey: Pair<LocalDate, String>?,
+            saveToken: Long?,
         ) {
-            val pending = PendingBackgroundCommit(targetStore, existingItemId, item, preloaded)
+            val pending = PendingBackgroundCommit(targetStore, existingItemId, item, preloaded, tokenKey, saveToken)
             if (hasActiveGesture) {
                 pendingBackgroundCommits.add(pending)
             } else {
@@ -1454,20 +1465,26 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
 
         private fun applyBackgroundCommit(commit: PendingBackgroundCommit) {
             try {
-                if (commit.existingItemId != null) {
+                if (commit.tokenKey != null && commit.saveToken != null &&
+                    !contourSaveTokens.remove(commit.tokenKey, commit.saveToken)
+                ) {
+                    ioExecutor.execute { runCatching { commit.targetStore.mediaFile(commit.item).delete() } }
+                    return
+                }
+                val applied = if (commit.existingItemId != null) {
                     clearFinalizingContourPreview(commit.existingItemId)
-                    val applied = replaceContourContent(
+                    replaceContourContent(
                         commit.existingItemId,
                         commit.item.ref,
                         commit.item.label,
                         commit.item.durationMs,
                         commit.preloaded,
                     )
-                    if (!applied) {
-                        ioExecutor.execute { runCatching { commit.targetStore.mediaFile(commit.item).delete() } }
-                    }
                 } else {
                     addImportedItem(commit.item, commit.preloaded)
+                }
+                if (!applied) {
+                    ioExecutor.execute { runCatching { commit.targetStore.mediaFile(commit.item).delete() } }
                 }
             } finally {
                 commit.targetStore.clearPendingImport(commit.item.ref)
