@@ -133,7 +133,7 @@ internal class PaperItemsStore(private val context: Context, val date: LocalDate
         override fun sizeOf(key: String, value: Bitmap): Int = value.byteCount
     }
     private val failedMedia = mutableSetOf<String>()
-    private val pendingImports = mutableSetOf<String>()
+    private val mediaDirKey = mediaDir.absolutePath
     val catalog: StickerCatalog by lazy { loadCatalog(context) }
     val hanziCatalog: HanziCatalog by lazy { loadHanziCatalog(context) }
 
@@ -177,14 +177,11 @@ internal class PaperItemsStore(private val context: Context, val date: LocalDate
     }
 
     fun clearPendingImport(filename: String) {
-        synchronized(pendingImports) {
-            pendingImports.remove(filename)
-        }
+        clearPendingImportForDir(mediaDirKey, filename)
     }
 
     fun pruneUnusedMedia(activeItems: List<PaperItem>) {
-        val protectedRefs = synchronized(pendingImports) { pendingImports.toSet() }
-        pruneUnusedMediaInDir(mediaDir, activeItems, protectedRefs)
+        pruneUnusedMediaInDir(mediaDir, activeItems, protectedRefsForDir(mediaDirKey))
     }
 
     fun mediaFile(item: PaperItem): File = File(mediaDir, item.ref)
@@ -264,9 +261,7 @@ internal class PaperItemsStore(private val context: Context, val date: LocalDate
         val filename = "${UUID.randomUUID()}.contour.json"
         val destination = File(mediaDir, filename)
         mediaDir.mkdirs()
-        synchronized(pendingImports) {
-            pendingImports.add(filename)
-        }
+        addPendingImportForDir(mediaDirKey, filename)
         val atomic = AtomicFile(destination)
         val payload = document.toJson().toByteArray(Charsets.UTF_8)
         val stream = atomic.startWrite()
@@ -296,7 +291,7 @@ internal class PaperItemsStore(private val context: Context, val date: LocalDate
         val id = UUID.randomUUID().toString()
         val filename = "$id.$extension"
         val destination = File(mediaDir, filename)
-        synchronized(pendingImports) { pendingImports.add(filename) }
+        addPendingImportForDir(mediaDirKey, filename)
         try {
             mediaDir.mkdirs()
 
@@ -593,10 +588,28 @@ internal class PaperItemsStore(private val context: Context, val date: LocalDate
         // Tracks ids whose decode failed (null result). LruCache cannot store null values.
         private val failedStickers = mutableSetOf<String>()
         private val sheetLock = Any()
+        private val pendingImportsByDir = HashMap<String, MutableSet<String>>()
         private val stickerExecutor = Executors.newSingleThreadExecutor { runnable ->
             Thread(runnable, "DiaryStickerIO").apply { isDaemon = true }
         }
         private val mainHandler by lazy { Handler(Looper.getMainLooper()) }
+
+        internal fun addPendingImportForDir(mediaDirKey: String, filename: String) {
+            synchronized(pendingImportsByDir) {
+                pendingImportsByDir.getOrPut(mediaDirKey) { mutableSetOf() }.add(filename)
+            }
+        }
+
+        internal fun clearPendingImportForDir(mediaDirKey: String, filename: String) {
+            synchronized(pendingImportsByDir) {
+                val refs = pendingImportsByDir[mediaDirKey] ?: return
+                refs.remove(filename)
+                if (refs.isEmpty()) pendingImportsByDir.remove(mediaDirKey)
+            }
+        }
+
+        internal fun protectedRefsForDir(mediaDirKey: String): Set<String> =
+            synchronized(pendingImportsByDir) { pendingImportsByDir[mediaDirKey]?.toSet().orEmpty() }
 
         private fun mediaCacheBytes(): Int =
             (Runtime.getRuntime().maxMemory() / 8).coerceIn(16L shl 20, 128L shl 20).toInt()

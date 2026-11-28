@@ -53,6 +53,33 @@ import kotlin.math.atan2
 import kotlin.math.hypot
 import kotlin.math.roundToInt
 
+internal object BackgroundItemSaveLogic {
+    fun isSaveStillValid(
+        startClearGen: Int,
+        currentClearGen: Int,
+        expectedToken: Long? = null,
+        activeToken: Long? = null,
+    ): Boolean =
+        startClearGen == currentClearGen &&
+            (expectedToken == null || activeToken == expectedToken)
+
+    fun mergeItemIntoList(
+        existing: List<PaperItem>,
+        existingItemId: String?,
+        newItem: PaperItem,
+    ): List<PaperItem> = if (existingItemId != null) {
+        existing.map { current ->
+            if (current.id == existingItemId) {
+                current.copy(ref = newItem.ref, label = newItem.label, durationMs = newItem.durationMs)
+            } else {
+                current
+            }
+        }
+    } else {
+        existing + newItem
+    }
+}
+
 @SuppressLint("ViewConstructor") // The GPUI host supplies the selected date programmatically.
 class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
     private val density = resources.displayMetrics.density
@@ -312,6 +339,7 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
 
         val forward = targetDate.isAfter(currentDate)
         val applyNewDate = {
+            paper.cancelGesture()
             pruneUnusedMediaAsync(itemsStore, paper.currentItems())
             currentDate = targetDate
             entry = InkEntry(context, targetDate, brushes)
@@ -375,6 +403,7 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
         attachedSheets.add(this)
+        paper.syncDiskItemUpdatesIfNeeded()
     }
 
     override fun onDetachedFromWindow() {
@@ -471,12 +500,13 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
             failureLogTag = "DiaryContour",
             failureLogMessage = "Could not save contour terrain",
             failureToastRes = R.string.contour_save_failed,
-        ) {
+        ) { registerCreated ->
             val item = if (existingItem != null) {
                 targetStore.updateContour(existingItem, document)
             } else {
                 targetStore.createContour(document, centerX, centerY, maxWidth, density)
             }
+            registerCreated(item)
             val hm = precomputedHeightmap ?: ContourTerrainEngine.buildHeightmap(document.strokes)
             val vox = precomputedVoxels ?: if (document.style == ContourRenderStyle.BLOCK) {
                 ContourTerrainEngine.quantizeForBlocks(hm)
@@ -503,7 +533,7 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
         failureLogTag: String,
         failureLogMessage: String,
         failureToastRes: Int,
-        work: () -> Pair<PaperItem, PreloadedContour?>,
+        work: (registerCreated: (PaperItem) -> Unit) -> Pair<PaperItem, PreloadedContour?>,
     ) {
         val tokenKey = existingItemId?.let { targetDate to it }
         val saveToken = tokenKey?.let { key ->
@@ -514,10 +544,14 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
         ioExecutor.execute {
             var createdItem: PaperItem? = null
             try {
-                val (item, preloaded) = work()
+                val (item, preloaded) = work { createdItem = it }
                 createdItem = item
-                if (clearGenerationOf(targetDate) != startGen ||
-                    (tokenKey != null && saveToken != null && contourSaveTokens[tokenKey] != saveToken)
+                if (!BackgroundItemSaveLogic.isSaveStillValid(
+                        startClearGen = startGen,
+                        currentClearGen = clearGenerationOf(targetDate),
+                        expectedToken = saveToken,
+                        activeToken = tokenKey?.let { contourSaveTokens[it] },
+                    )
                 ) {
                     if (tokenKey != null && saveToken != null) {
                         contourSaveTokens.remove(tokenKey, saveToken)
@@ -541,29 +575,33 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                         paper.clearFinalizingContourPreview(existingItemId)
                         liveSheet?.paper?.clearFinalizingContourPreview(existingItemId)
                     }
-                    if (clearGenerationOf(targetDate) != startGen) {
+                    if (!BackgroundItemSaveLogic.isSaveStillValid(startGen, clearGenerationOf(targetDate))) {
                         ioExecutor.execute {
                             runCatching { targetStore.mediaFile(item).delete() }
                             targetStore.clearPendingImport(item.ref)
                         }
                     } else if (liveSheet != null) {
-                        liveSheet.paper.enqueueOrApplyBackgroundCommit(targetStore, existingItemId, item, preloaded)
+                        liveSheet.paper.enqueueOrApplyBackgroundCommit(
+                            targetStore = targetStore,
+                            startGen = startGen,
+                            existingItemId = existingItemId,
+                            item = item,
+                            preloaded = preloaded,
+                            failureLogTag = failureLogTag,
+                            failureLogMessage = failureLogMessage,
+                            failureToastRes = failureToastRes,
+                        )
                     } else {
-                        // Tracked like stroke writes so switching back to that date waits only for this fast .items write.
-                        val previousWrite = pendingEntryWrites[targetDate]
-                        pendingEntryWrites[targetDate] = ioExecutor.submit {
-                            runCatching { previousWrite?.get() }
-                            writeItemUpdateToDisk(
-                                targetDate = targetDate,
-                                targetStore = targetStore,
-                                startGen = startGen,
-                                existingItemId = existingItemId,
-                                item = item,
-                                failureLogTag = failureLogTag,
-                                failureLogMessage = failureLogMessage,
-                                failureToastRes = failureToastRes,
-                            )
-                        }
+                        enqueueDiskItemWrite(
+                            targetDate = targetDate,
+                            targetStore = targetStore,
+                            startGen = startGen,
+                            existingItemId = existingItemId,
+                            item = item,
+                            failureLogTag = failureLogTag,
+                            failureLogMessage = failureLogMessage,
+                            failureToastRes = failureToastRes,
+                        )
                     }
                 }
             } catch (error: Exception) {
@@ -582,6 +620,33 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
         }
     }
 
+    private fun enqueueDiskItemWrite(
+        targetDate: LocalDate,
+        targetStore: PaperItemsStore,
+        startGen: Int,
+        existingItemId: String?,
+        item: PaperItem,
+        failureLogTag: String,
+        failureLogMessage: String,
+        failureToastRes: Int,
+    ) {
+        // Tracked on a dedicated executor so switching back waits only for fast entry I/O.
+        val previousWrite = pendingEntryWrites[targetDate]
+        pendingEntryWrites[targetDate] = entryWriteExecutor.submit {
+            runCatching { previousWrite?.get() }
+            writeItemUpdateToDisk(
+                targetDate = targetDate,
+                targetStore = targetStore,
+                startGen = startGen,
+                existingItemId = existingItemId,
+                item = item,
+                failureLogTag = failureLogTag,
+                failureLogMessage = failureLogMessage,
+                failureToastRes = failureToastRes,
+            )
+        }
+    }
+
     private fun writeItemUpdateToDisk(
         targetDate: LocalDate,
         targetStore: PaperItemsStore,
@@ -593,23 +658,14 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
         failureToastRes: Int,
     ) {
         try {
-            if (clearGenerationOf(targetDate) != startGen) {
+            if (!BackgroundItemSaveLogic.isSaveStillValid(startGen, clearGenerationOf(targetDate))) {
                 runCatching { targetStore.mediaFile(item).delete() }
                 return
             }
             val existing = targetStore.read()
-            val next = if (existingItemId != null) {
-                existing.map { current ->
-                    if (current.id == existingItemId) {
-                        current.copy(ref = item.ref, label = item.label, durationMs = item.durationMs)
-                    } else {
-                        current
-                    }
-                }
-            } else {
-                existing + item
-            }
+            val next = BackgroundItemSaveLogic.mergeItemIntoList(existing, existingItemId, item)
             targetStore.write(next)
+            bumpDiskItemRevision(targetDate)
         } catch (error: Exception) {
             runCatching { targetStore.mediaFile(item).delete() }
             Log.e(failureLogTag, failureLogMessage, error)
@@ -756,8 +812,9 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
             failureLogTag = "DiaryMedia",
             failureLogMessage = "Could not import media",
             failureToastRes = R.string.media_import_failed,
-        ) {
+        ) { registerCreated ->
             val item = targetStore.importMedia(uri, kind, centerX, centerY, maxWidth, density)
+            registerCreated(item)
             targetStore.loadBitmap(item)
             item to null
         }
@@ -900,9 +957,13 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
     )
     private data class PendingBackgroundCommit(
         val targetStore: PaperItemsStore,
+        val startGen: Int,
         val existingItemId: String?,
         val item: PaperItem,
         val preloaded: PreloadedContour?,
+        val failureLogTag: String,
+        val failureLogMessage: String,
+        val failureToastRes: Int,
     )
     private data class ContourOrbit(
         val pointerId: Int,
@@ -980,6 +1041,7 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
         private var items = emptyList<PaperItem>()
         private var persistedStrokes = emptyList<Stroke>()
         private var persistedItems = emptyList<PaperItem>()
+        private var loadedDiskItemRevision = 0L
         private var selectedItemIds: Set<String> = emptySet()
         private var selectedStrokeIndices: Set<Int> = emptySet()
         private var selectionBounds: RectF? = null
@@ -1033,10 +1095,12 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
             addView(ink, FrameLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
             try {
                 awaitPendingWrite(entry.date)
+                val itemRev = diskItemRevisionOf(entry.date)
                 strokes = entry.read()
                 items = itemsStore.read()
                 persistedStrokes = strokes
                 persistedItems = items
+                loadedDiskItemRevision = itemRev
                 readable = true
                 preloadMediaBitmaps()
             } catch (error: Exception) {
@@ -1059,7 +1123,7 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                         commitChange(previous, this@Paper.strokes + currentCompleted, items)
                     }
                     for ((oldEntry, oldStrokes) in byPreviousEntry) {
-                        val future = ioExecutor.submit {
+                        val future = entryWriteExecutor.submit {
                             runCatching {
                                 oldEntry.write(oldEntry.read() + oldStrokes)
                             }
@@ -1078,8 +1142,22 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
             loadingBitmaps.clear()
             preloadedContours.clear()
             finalizingContourPreviews.clear()
-            pendingBackgroundCommits.forEach { it.targetStore.clearPendingImport(it.item.ref) }
-            pendingBackgroundCommits.clear()
+            if (pendingBackgroundCommits.isNotEmpty()) {
+                val leftovers = pendingBackgroundCommits.toList()
+                pendingBackgroundCommits.clear()
+                for (commit in leftovers) {
+                    enqueueDiskItemWrite(
+                        targetDate = commit.targetStore.date,
+                        targetStore = commit.targetStore,
+                        startGen = commit.startGen,
+                        existingItemId = commit.existingItemId,
+                        item = commit.item,
+                        failureLogTag = commit.failureLogTag,
+                        failureLogMessage = commit.failureLogMessage,
+                        failureToastRes = commit.failureToastRes,
+                    )
+                }
+            }
             selectedItemIds = emptySet()
             selectedStrokeIndices = emptySet()
             selectionBounds = null
@@ -1090,10 +1168,12 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
             readable = false
             try {
                 awaitPendingWrite(entry.date)
+                val itemRev = diskItemRevisionOf(entry.date)
                 strokes = entry.read()
                 items = itemsStore.read()
                 persistedStrokes = strokes
                 persistedItems = items
+                loadedDiskItemRevision = itemRev
                 readable = true
                 preloadMediaBitmaps()
             } catch (error: Exception) {
@@ -1101,10 +1181,40 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                 items = emptyList()
                 persistedStrokes = strokes
                 persistedItems = items
+                loadedDiskItemRevision = diskItemRevisionOf(entry.date)
                 showEntryError(R.string.ink_load_failed, error)
             }
             updateHistoryButtons()
             invalidate()
+        }
+
+        fun syncDiskItemUpdatesIfNeeded() {
+            if (!readable) return
+            if (!pendingEntryWrites.containsKey(entry.date) &&
+                diskItemRevisionOf(entry.date) == loadedDiskItemRevision
+            ) {
+                return
+            }
+            awaitPendingWrite(entry.date)
+            val currentRev = diskItemRevisionOf(entry.date)
+            if (currentRev == loadedDiskItemRevision) return
+            val diskItems = runCatching { itemsStore.read() }.getOrNull() ?: return
+            loadedDiskItemRevision = currentRev
+            if (diskItems != items) {
+                val prevRefs = items.mapTo(mutableSetOf()) { it.ref }
+                val nextRefs = diskItems.mapTo(mutableSetOf()) { it.ref }
+                (prevRefs - nextRefs).forEach { preloadedContours.remove(it) }
+                items = diskItems
+                persistedItems = diskItems
+                val liveIds = diskItems.mapTo(mutableSetOf()) { it.id }
+                selectedItemIds = selectedItemIds.filterTo(mutableSetOf()) { it in liveIds }
+                recomputeSelectionBounds()
+                undoStack.clear()
+                redoStack.clear()
+                preloadMediaBitmaps()
+                updateHistoryButtons()
+                invalidate()
+            }
         }
 
         private fun preloadMediaBitmaps() {
@@ -1294,11 +1404,24 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
 
         fun enqueueOrApplyBackgroundCommit(
             targetStore: PaperItemsStore,
+            startGen: Int,
             existingItemId: String?,
             item: PaperItem,
             preloaded: PreloadedContour?,
+            failureLogTag: String,
+            failureLogMessage: String,
+            failureToastRes: Int,
         ) {
-            val pending = PendingBackgroundCommit(targetStore, existingItemId, item, preloaded)
+            val pending = PendingBackgroundCommit(
+                targetStore = targetStore,
+                startGen = startGen,
+                existingItemId = existingItemId,
+                item = item,
+                preloaded = preloaded,
+                failureLogTag = failureLogTag,
+                failureLogMessage = failureLogMessage,
+                failureToastRes = failureToastRes,
+            )
             if (hasActiveItemGesture) {
                 pendingBackgroundCommits.add(pending)
             } else {
@@ -1420,7 +1543,7 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
 
         @SuppressLint("ClickableViewAccessibility") // Ink uses pointer positions and has no click action.
         override fun onTouchEvent(event: MotionEvent): Boolean {
-            if (!readable) return false
+            if (!readable || isSwitchingDate) return false
             val index = event.actionIndex
             val action = when (event.actionMasked) {
                 SAMSUNG_ACTION_PEN_DOWN -> MotionEvent.ACTION_DOWN
@@ -2449,6 +2572,7 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
             clearGenerations[currentDate] = clearGenerationOf(currentDate) + 1
             stopAudio()
             if (save(emptyList(), emptyList(), allowUnreadable = true)) {
+                loadedDiskItemRevision = diskItemRevisionOf(currentDate)
                 readable = true
                 val storeToClear = itemsStore
                 storeToClear.clearMetadataAndCache()
@@ -2548,13 +2672,20 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
         val ioExecutor = Executors.newSingleThreadExecutor { runnable ->
             Thread(runnable, "DiaryMediaIO").apply { isDaemon = true }
         }
+        val entryWriteExecutor = Executors.newSingleThreadExecutor { runnable ->
+            Thread(runnable, "DiaryEntryIO").apply { isDaemon = true }
+        }
         val pendingEntryWrites = ConcurrentHashMap<LocalDate, Future<*>>()
         val clearGenerations = ConcurrentHashMap<LocalDate, Int>()
+        val diskItemRevisions = ConcurrentHashMap<LocalDate, AtomicLong>()
         val contourSaveTokens = ConcurrentHashMap<Pair<LocalDate, String>, Long>()
         val nextContourToken = AtomicLong(1L)
         val attachedSheets = mutableSetOf<InkSheet>()
 
         fun clearGenerationOf(date: LocalDate): Int = clearGenerations[date] ?: 0
+        fun diskItemRevisionOf(date: LocalDate): Long = diskItemRevisions[date]?.get() ?: 0L
+        fun bumpDiskItemRevision(date: LocalDate): Long =
+            diskItemRevisions.computeIfAbsent(date) { AtomicLong(0L) }.incrementAndGet()
 
         fun awaitPendingWrite(date: LocalDate) {
             val future = pendingEntryWrites.remove(date) ?: return

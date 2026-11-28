@@ -848,4 +848,68 @@ class DiaryCoreTests {
         assertArrayEquals(intArrayOf(0, 2, 3), Contour3DRenderer.sampleCoords(size = 4, step = 2))
         assertArrayEquals(intArrayOf(0, 2, 4), Contour3DRenderer.sampleCoords(size = 5, step = 2))
     }
+
+    @Test
+    fun backgroundItemSaveLogicChecksStalenessAndMergesItems() {
+        assertTrue(BackgroundItemSaveLogic.isSaveStillValid(startClearGen = 2, currentClearGen = 2))
+        assertFalse(BackgroundItemSaveLogic.isSaveStillValid(startClearGen = 2, currentClearGen = 3))
+        assertTrue(BackgroundItemSaveLogic.isSaveStillValid(startClearGen = 1, currentClearGen = 1, expectedToken = 7L, activeToken = 7L))
+        assertFalse(BackgroundItemSaveLogic.isSaveStillValid(startClearGen = 1, currentClearGen = 1, expectedToken = 7L, activeToken = 8L))
+        assertFalse(BackgroundItemSaveLogic.isSaveStillValid(startClearGen = 1, currentClearGen = 1, expectedToken = 7L, activeToken = null))
+
+        val original = PaperItem(
+            id = "contour-1",
+            kind = PaperItemKind.CONTOUR,
+            ref = "old.contour.json",
+            label = "smooth",
+            durationMs = 2L,
+            x = 24f,
+            y = 48f,
+            width = 200f,
+            height = 150f,
+            score = 0,
+            rotation = 15f,
+        )
+        val edited = original.copy(
+            ref = "new.contour.json",
+            label = "block",
+            durationMs = 5L,
+            x = 999f,
+            rotation = 0f,
+        )
+        val mergedUpdate = BackgroundItemSaveLogic.mergeItemIntoList(listOf(original), "contour-1", edited)
+        assertEquals(1, mergedUpdate.size)
+        assertEquals("new.contour.json", mergedUpdate.single().ref)
+        assertEquals("block", mergedUpdate.single().label)
+        assertEquals(5L, mergedUpdate.single().durationMs)
+        assertEquals(24f, mergedUpdate.single().x)
+        assertEquals(15f, mergedUpdate.single().rotation)
+
+        val extra = original.copy(id = "photo-2", kind = PaperItemKind.PHOTO, ref = "p.webp")
+        val mergedAdd = BackgroundItemSaveLogic.mergeItemIntoList(listOf(original), null, extra)
+        assertEquals(listOf(original, extra), mergedAdd)
+    }
+
+    @Test
+    fun sharedPendingImportsProtectInflightFilesAcrossStoreInstances() {
+        val dir = Files.createTempDirectory("diary-shared-pending").toFile()
+        try {
+            val inflight = File(dir, "inflight.contour.json").apply { writeText("{}") }
+            val obsolete = File(dir, "obsolete.webp").apply { writeText("old") }
+            val key = dir.absolutePath
+
+            PaperItemsStore.addPendingImportForDir(key, inflight.name)
+            PaperItemsStore.pruneUnusedMediaInDir(dir, emptyList(), PaperItemsStore.protectedRefsForDir(key))
+
+            assertTrue(inflight.exists())
+            assertFalse(obsolete.exists())
+
+            PaperItemsStore.clearPendingImportForDir(key, inflight.name)
+            assertTrue(PaperItemsStore.protectedRefsForDir(key).isEmpty())
+            PaperItemsStore.pruneUnusedMediaInDir(dir, emptyList(), PaperItemsStore.protectedRefsForDir(key))
+            assertFalse(inflight.exists())
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
 }
