@@ -878,12 +878,14 @@ class DiaryCoreTests {
             rotation = 0f,
         )
         val mergedUpdate = BackgroundItemSaveLogic.mergeItemIntoList(listOf(original), "contour-1", edited)
-        assertEquals(1, mergedUpdate.size)
+        assertNotNull(mergedUpdate)
+        assertEquals(1, mergedUpdate!!.size)
         assertEquals("new.contour.json", mergedUpdate.single().ref)
         assertEquals("block", mergedUpdate.single().label)
         assertEquals(5L, mergedUpdate.single().durationMs)
         assertEquals(24f, mergedUpdate.single().x)
         assertEquals(15f, mergedUpdate.single().rotation)
+        assertNull(BackgroundItemSaveLogic.mergeItemIntoList(listOf(original), "deleted-id", edited))
 
         val extra = original.copy(id = "photo-2", kind = PaperItemKind.PHOTO, ref = "p.webp")
         val mergedAdd = BackgroundItemSaveLogic.mergeItemIntoList(listOf(original), null, extra)
