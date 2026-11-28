@@ -27,6 +27,7 @@ import java.util.concurrent.Executors
 import kotlin.concurrent.withLock
 import kotlin.math.max
 import kotlin.math.roundToInt
+import kotlin.random.Random
 
 internal enum class PaperItemKind(val wire: String) {
     STICKER("sticker"),
@@ -52,6 +53,82 @@ internal data class HanziWord(
 
 internal data class HanziCatalog(val words: List<HanziWord>) {
     fun find(char: String): HanziWord? = words.firstOrNull { it.char == char }
+}
+
+internal data class HanziHistory(
+    val practicedCounts: Map<String, Int> = emptyMap(),
+    val seenChars: Set<String> = emptySet(),
+)
+
+internal object HanziWordSelector {
+    fun parseCanonicalItemsDate(filename: String): LocalDate? {
+        if (!filename.endsWith(".items")) return null
+        val stem = filename.removeSuffix(".items")
+        val parsed = runCatching { LocalDate.parse(stem) }.getOrNull() ?: return null
+        return if (parsed.toString() == stem) parsed else null
+    }
+
+    fun scanOtherDaysHistory(
+        entriesDir: File,
+        excludeDate: LocalDate,
+        readJson: (File) -> String = { file -> String(AtomicFile(file).readFully(), Charsets.UTF_8) },
+    ): HanziHistory {
+        val files = entriesDir.listFiles() ?: return HanziHistory()
+        val practicedCounts = HashMap<String, Int>()
+        val seenChars = HashSet<String>()
+        for (file in files) {
+            if (!file.isFile) continue
+            val date = parseCanonicalItemsDate(file.name) ?: continue
+            if (date == excludeDate) continue
+            val items = DayState.of(date).lock.withLock {
+                val json = runCatching { readJson(file) }.getOrNull() ?: return@withLock null
+                runCatching { PaperItemsStore.decodeItemsJson(json) }.getOrNull()
+            } ?: continue
+            for (item in items) {
+                if (item.kind != PaperItemKind.HANZI) continue
+                seenChars.add(item.ref)
+                if (item.score > 0) {
+                    practicedCounts[item.ref] = (practicedCounts[item.ref] ?: 0) + 1
+                }
+            }
+        }
+        return HanziHistory(practicedCounts = practicedCounts, seenChars = seenChars)
+    }
+
+    fun pickNextWord(
+        words: List<HanziWord>,
+        currentDayItems: List<PaperItem>,
+        otherDaysHistory: HanziHistory,
+        random: Random = Random.Default,
+    ): HanziWord? {
+        if (words.isEmpty()) return null
+        val currentDayChars = HashSet<String>()
+        val totalPracticeCounts = HashMap(otherDaysHistory.practicedCounts)
+        val allSeenChars = HashSet(otherDaysHistory.seenChars)
+        for (item in currentDayItems) {
+            if (item.kind != PaperItemKind.HANZI) continue
+            currentDayChars.add(item.ref)
+            allSeenChars.add(item.ref)
+            if (item.score > 0) {
+                totalPracticeCounts[item.ref] = (totalPracticeCounts[item.ref] ?: 0) + 1
+            }
+        }
+
+        val fresh = words.filter { it.char !in allSeenChars }
+        if (fresh.isNotEmpty()) return fresh[random.nextInt(fresh.size)]
+
+        val unpracticedNotToday = words.filter {
+            (totalPracticeCounts[it.char] ?: 0) == 0 && it.char !in currentDayChars
+        }
+        if (unpracticedNotToday.isNotEmpty()) {
+            return unpracticedNotToday[random.nextInt(unpracticedNotToday.size)]
+        }
+
+        val pool = words.filter { it.char !in currentDayChars }.ifEmpty { words }
+        val minCount = pool.minOf { totalPracticeCounts[it.char] ?: 0 }
+        val leastPracticed = pool.filter { (totalPracticeCounts[it.char] ?: 0) == minCount }
+        return leastPracticed[random.nextInt(leastPracticed.size)]
+    }
 }
 
 internal data class PaperItem(
@@ -135,6 +212,9 @@ internal class PaperItemsStore(private val context: Context, val date: LocalDate
     private val failedMedia = mutableSetOf<String>()
     val catalog: StickerCatalog by lazy { loadCatalog(context) }
     val hanziCatalog: HanziCatalog by lazy { loadHanziCatalog(context) }
+
+    fun scanOtherDaysHanziHistory(): HanziHistory =
+        HanziWordSelector.scanOtherDaysHistory(File(context.filesDir, "entries"), date)
 
     fun read(): List<PaperItem> = state.lock.withLock {
         val bytes = try {

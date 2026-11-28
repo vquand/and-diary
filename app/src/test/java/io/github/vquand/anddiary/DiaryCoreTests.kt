@@ -1030,4 +1030,143 @@ class DiaryCoreTests {
         )
         assertEquals(setOf("2024-02-29", "2026-11-28"), days)
     }
+
+    @Test
+    fun hanziWordSelectorAvoidsPracticedWordsAndPicksRandomly() {
+        fun word(char: String) = HanziWord(
+            char = char,
+            pinyin = char,
+            hanViet = char,
+            meaning = char,
+            strokes = listOf(listOf(10f to 10f, 90f to 90f)),
+        )
+
+        fun hanziItem(char: String, score: Int) = PaperItem(
+            id = "id-$char-$score",
+            kind = PaperItemKind.HANZI,
+            ref = char,
+            label = char,
+            durationMs = 1L,
+            x = 0f,
+            y = 0f,
+            width = 100f,
+            height = 100f,
+            score = score,
+        )
+
+        val catalog = listOf("永", "心", "安", "日", "月", "山", "水", "木").map(::word)
+
+        // Random selection across fresh catalog should not always pick the first element.
+        val firstPicks = (0 until 20).map { seed ->
+            HanziWordSelector.pickNextWord(
+                words = catalog,
+                currentDayItems = emptyList(),
+                otherDaysHistory = HanziHistory(),
+                random = kotlin.random.Random(seed),
+            )!!.char
+        }.toSet()
+        assertTrue("Expected random selection to vary across seeds, got $firstPicks", firstPicks.size > 1)
+
+        // Words practiced on previous days are avoided even when current day is empty.
+        val practicedHistory = HanziHistory(
+            practicedCounts = mapOf("永" to 1, "心" to 2, "安" to 1, "日" to 1, "月" to 1, "山" to 1),
+            seenChars = setOf("永", "心", "安", "日", "月", "山"),
+        )
+        val remainingPicks = (0 until 20).map { seed ->
+            HanziWordSelector.pickNextWord(
+                words = catalog,
+                currentDayItems = emptyList(),
+                otherDaysHistory = practicedHistory,
+                random = kotlin.random.Random(seed),
+            )!!.char
+        }.toSet()
+        assertEquals(setOf("水", "木"), remainingPicks)
+
+        // If one of the remaining words is already on today's sheet (even unpracticed), pick the other.
+        val onlyLeft = HanziWordSelector.pickNextWord(
+            words = catalog,
+            currentDayItems = listOf(hanziItem("水", score = 0)),
+            otherDaysHistory = practicedHistory,
+            random = kotlin.random.Random(42),
+        )
+        assertEquals("木", onlyLeft!!.char)
+
+        // When all words have been seen, prefer unpracticed words (score == 0 elsewhere) over practiced ones.
+        val seenWithUnpracticed = HanziHistory(
+            practicedCounts = mapOf("永" to 1, "心" to 1, "安" to 1, "日" to 1, "月" to 1, "山" to 1, "水" to 1),
+            seenChars = setOf("永", "心", "安", "日", "月", "山", "水", "木"),
+        )
+        assertEquals(
+            "木",
+            HanziWordSelector.pickNextWord(
+                words = catalog,
+                currentDayItems = emptyList(),
+                otherDaysHistory = seenWithUnpracticed,
+                random = kotlin.random.Random(7),
+            )!!.char,
+        )
+
+        // Once all words have been practiced, prefer the least-practiced words not on today's sheet.
+        val allPracticed = HanziHistory(
+            practicedCounts = mapOf("永" to 2, "心" to 2, "安" to 2, "日" to 2, "月" to 2, "山" to 2, "水" to 1, "木" to 1),
+            seenChars = setOf("永", "心", "安", "日", "月", "山", "水", "木"),
+        )
+        val leastPracticedPicks = (0 until 20).map { seed ->
+            HanziWordSelector.pickNextWord(
+                words = catalog,
+                currentDayItems = emptyList(),
+                otherDaysHistory = allPracticed,
+                random = kotlin.random.Random(seed),
+            )!!.char
+        }.toSet()
+        assertEquals(setOf("水", "木"), leastPracticedPicks)
+
+        assertNull(HanziWordSelector.pickNextWord(emptyList(), emptyList(), HanziHistory()))
+    }
+
+    @Test
+    fun hanziHistoryScanReadsOnlyCanonicalOtherDayItemsFiles() {
+        val dir = Files.createTempDirectory("diary-hanzi-history-test").toFile()
+        val today = java.time.LocalDate.of(2026, 11, 28)
+        DayState.resetForTests()
+        try {
+            fun hanziJson(char: String, score: Int) = PaperItemsStore.encodeItemsJson(
+                listOf(
+                    PaperItem(
+                        id = "h-$char",
+                        kind = PaperItemKind.HANZI,
+                        ref = char,
+                        label = char,
+                        durationMs = 1L,
+                        x = 0f,
+                        y = 0f,
+                        width = 100f,
+                        height = 100f,
+                        score = score,
+                    ),
+                ),
+            )
+            // Practiced on prior day.
+            File(dir, "2026-11-26.items").writeText(hanziJson("永", 92))
+            // Added but unpracticed on prior day.
+            File(dir, "2026-11-27.items").writeText(hanziJson("心", 0))
+            // Current day should be excluded from other-days scan.
+            File(dir, "2026-11-28.items").writeText(hanziJson("安", 85))
+            // Non-canonical / backup / corrupt files must be ignored safely.
+            File(dir, "2026-11-25.items.bak").writeText(hanziJson("日", 95))
+            File(dir, "2025-02-29.items").writeText(hanziJson("月", 95))
+            File(dir, "2026-11-24.items").writeText("not valid json")
+
+            val history = HanziWordSelector.scanOtherDaysHistory(
+                entriesDir = dir,
+                excludeDate = today,
+                readJson = { it.readText(Charsets.UTF_8) },
+            )
+            assertEquals(mapOf("永" to 1), history.practicedCounts)
+            assertEquals(setOf("永", "心"), history.seenChars)
+        } finally {
+            DayState.resetForTests()
+            dir.deleteRecursively()
+        }
+    }
 }
