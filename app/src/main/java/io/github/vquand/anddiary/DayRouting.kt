@@ -69,12 +69,13 @@ internal object DayRouting {
         queueSize: Int,
     ): Boolean = !hasActiveGesture && !loading && readable && queueSize > 0
 
+    fun canQueueOrInsert(loading: Boolean, readable: Boolean): Boolean = loading || readable
+
     fun shouldReloadOnDiskSync(
-        loading: Boolean,
         readable: Boolean,
         loadedRev: Long,
         currentRev: Long,
-    ): Boolean = loading || (readable && currentRev != loadedRev)
+    ): Boolean = readable && currentRev != loadedRev
 
     fun onCommitSaveFailed(
         genValid: Boolean,

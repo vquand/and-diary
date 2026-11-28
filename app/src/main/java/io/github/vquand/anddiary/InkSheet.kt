@@ -484,6 +484,7 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
         if (isSwitchingDate) return
         hidePopovers()
         paper.cancelGesture()
+        if (existingItem == null && !ensureCanQueueInsert()) return
         contourDialog?.dismiss()
         val initialDoc = if (existingItem == null) {
             ContourDocument()
@@ -566,6 +567,24 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
         }
     }
 
+    private fun discardObsoleteCommit(
+        targetStore: PaperItemsStore,
+        startGen: Int,
+        existingItemId: String?,
+        item: PaperItem,
+        tokenKey: Pair<LocalDate, String>?,
+        saveToken: Long?,
+    ) {
+        val tokenActive = finishContourToken(tokenKey, saveToken)
+        if (existingItemId != null && tokenActive && DayState.of(targetStore.date).clearGen.get() != startGen) {
+            clearContourPreviewEverywhere(targetStore.date, existingItemId)
+        }
+        ioExecutor.execute {
+            deleteMediaFileIfBacked(targetStore, item)
+            targetStore.clearPendingImport(item.ref)
+        }
+    }
+
     private fun enqueueBackgroundItemSave(
         targetDate: LocalDate,
         targetStore: PaperItemsStore,
@@ -626,14 +645,14 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                     when (route) {
                         CommitRoute.DISCARD -> {
                             // A newer token owns the preview; only drop ours when the whole day was cleared.
-                            finishContourToken(tokenKey, saveToken)
-                            if (existingItemId != null && state.clearGen.get() != startGen) {
-                                clearContourPreviewEverywhere(targetDate, existingItemId)
-                            }
-                            ioExecutor.execute {
-                                deleteMediaFileIfBacked(targetStore, item)
-                                targetStore.clearPendingImport(item.ref)
-                            }
+                            discardObsoleteCommit(
+                                targetStore = targetStore,
+                                startGen = startGen,
+                                existingItemId = existingItemId,
+                                item = item,
+                                tokenKey = tokenKey,
+                                saveToken = saveToken,
+                            )
                         }
                         CommitRoute.APPLY, CommitRoute.QUEUE_UNTIL_LOADED -> {
                             liveSheet!!.paper.enqueueOrApplyBackgroundCommit(
@@ -743,9 +762,7 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                 saveFailed = true
                 Log.e(failureLogTag, failureLogMessage, error)
             } finally {
-                if (!saveFailed) {
-                    targetStore.clearPendingImport(item.ref)
-                }
+                targetStore.clearPendingImport(item.ref)
                 mainHandler.post {
                     val tokenActive = if (tokenKey != null && saveToken != null) {
                         finishContourToken(tokenKey, saveToken).also { active ->
@@ -842,6 +859,12 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
         return false
     }
 
+    private fun ensureCanQueueInsert(): Boolean {
+        if (DayRouting.canQueueOrInsert(paper.loading, paper.isReadable)) return true
+        Toast.makeText(context, R.string.ink_load_failed, Toast.LENGTH_SHORT).show()
+        return false
+    }
+
     private fun openStickerDialog() {
         if (isSwitchingDate) return
         hidePopovers()
@@ -893,6 +916,7 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
     }
 
     private fun pickMedia(kind: PaperItemKind) {
+        if (!ensureCanQueueInsert()) return
         val activity = context as? DiaryActivity ?: return
         val mime = when (kind) {
             PaperItemKind.PHOTO -> "image/*"
@@ -1384,7 +1408,7 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
 
         fun syncDiskItemUpdatesIfNeeded() {
             val state = DayState.of(entry.date)
-            if (DayRouting.shouldReloadOnDiskSync(loading, readable, loadedDiskItemRevision, state.diskRev.get())) {
+            if (DayRouting.shouldReloadOnDiskSync(readable, loadedDiskItemRevision, state.diskRev.get())) {
                 startLoad()
             }
         }
@@ -1444,28 +1468,12 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
             for (commit in queued) {
                 val state = DayState.of(commit.targetStore.date)
                 val genValid = state.clearGen.get() == commit.startGen
-                val tokenActive = if (commit.tokenKey != null && commit.saveToken != null) {
-                    finishContourToken(commit.tokenKey, commit.saveToken)
-                } else {
-                    true
-                }
+                val tokenActive = contourRegistry.isActive(commit.tokenKey, commit.saveToken)
                 if (!genValid || !tokenActive) {
-                    if (!genValid && tokenActive && commit.existingItemId != null) {
-                        clearFinalizingContourPreview(commit.existingItemId)
-                    }
-                    ioExecutor.execute {
-                        deleteMediaFileIfBacked(commit.targetStore, commit.item)
-                        commit.targetStore.clearPendingImport(commit.item.ref)
-                    }
+                    discardObsoleteCommit(commit)
                     continue
                 }
-                commit.existingItemId?.let { clearFinalizingContourPreview(it) }
-                commit.targetStore.clearPendingImport(commit.item.ref)
-                Toast.makeText(
-                    context,
-                    failureToastForCommit(commit.existingItemId, commit.item),
-                    Toast.LENGTH_LONG,
-                ).show()
+                notifyCommitFailure(commit)
             }
         }
 
@@ -1664,9 +1672,13 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
             }
         }
 
-        fun addImportedItem(item: PaperItem, preloaded: PreloadedContour? = null): Boolean {
+        fun addImportedItem(
+            item: PaperItem,
+            preloaded: PreloadedContour? = null,
+            showError: Boolean = true,
+        ): Boolean {
             val previous = HistorySnapshot(strokes, items)
-            if (!commitChange(previous, strokes, items + item)) return false
+            if (!commitChange(previous, strokes, items + item, showError = showError)) return false
             selectedItemIds = setOf(item.id)
             selectedStrokeIndices = emptySet()
             confirmingDelete = false
@@ -1690,12 +1702,13 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
             label: String,
             durationMs: Long,
             preloaded: PreloadedContour? = null,
+            showError: Boolean = true,
         ): Boolean {
             val current = items.firstOrNull { it.id == itemId } ?: return false
             val updatedItem = current.copy(ref = ref, label = label, durationMs = durationMs)
             val previous = HistorySnapshot(strokes, items)
             val updated = items.map { if (it.id == itemId) updatedItem else it }
-            if (!commitChange(previous, strokes, updated)) return false
+            if (!commitChange(previous, strokes, updated, showError = showError)) return false
             preloadedContours.remove(current.ref)
             pendingPreloadedContours.keys.removeAll { it.idOrRef == itemId }
             if (preloaded != null) {
@@ -1734,19 +1747,35 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
             }
         }
 
+        private fun discardObsoleteCommit(commit: PendingBackgroundCommit) {
+            this@InkSheet.discardObsoleteCommit(
+                targetStore = commit.targetStore,
+                startGen = commit.startGen,
+                existingItemId = commit.existingItemId,
+                item = commit.item,
+                tokenKey = commit.tokenKey,
+                saveToken = commit.saveToken,
+            )
+        }
+
+        private fun notifyCommitFailure(commit: PendingBackgroundCommit) {
+            if (commit.tokenKey == null || commit.saveToken == null ||
+                finishContourToken(commit.tokenKey, commit.saveToken)
+            ) {
+                commit.existingItemId?.let { clearFinalizingContourPreview(it) }
+                Toast.makeText(
+                    context,
+                    failureToastForCommit(commit.existingItemId, commit.item),
+                    Toast.LENGTH_LONG,
+                ).show()
+            }
+            commit.targetStore.clearPendingImport(commit.item.ref)
+        }
+
         private fun applyBackgroundCommit(commit: PendingBackgroundCommit) {
             val state = DayState.of(commit.targetStore.date)
             if (state.clearGen.get() != commit.startGen) {
-                if (commit.tokenKey != null && commit.saveToken != null &&
-                    finishContourToken(commit.tokenKey, commit.saveToken) &&
-                    commit.existingItemId != null
-                ) {
-                    clearFinalizingContourPreview(commit.existingItemId)
-                }
-                ioExecutor.execute {
-                    deleteMediaFileIfBacked(commit.targetStore, commit.item)
-                    commit.targetStore.clearPendingImport(commit.item.ref)
-                }
+                discardObsoleteCommit(commit)
                 return
             }
             if (commit.targetStore.date != entry.date) {
@@ -1756,11 +1785,7 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
             if (commit.tokenKey != null && commit.saveToken != null &&
                 !contourRegistry.isActive(commit.tokenKey, commit.saveToken)
             ) {
-                finishContourToken(commit.tokenKey, commit.saveToken)
-                ioExecutor.execute {
-                    deleteMediaFileIfBacked(commit.targetStore, commit.item)
-                    commit.targetStore.clearPendingImport(commit.item.ref)
-                }
+                discardObsoleteCommit(commit)
                 return
             }
             if (loading) {
@@ -1768,17 +1793,7 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                 return
             }
             if (!readable) {
-                if (commit.tokenKey == null || commit.saveToken == null ||
-                    finishContourToken(commit.tokenKey, commit.saveToken)
-                ) {
-                    commit.existingItemId?.let { clearFinalizingContourPreview(it) }
-                    Toast.makeText(
-                        context,
-                        failureToastForCommit(commit.existingItemId, commit.item),
-                        Toast.LENGTH_LONG,
-                    ).show()
-                }
-                commit.targetStore.clearPendingImport(commit.item.ref)
+                notifyCommitFailure(commit)
                 return
             }
             val applied = if (commit.existingItemId != null) {
@@ -1788,9 +1803,10 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                     commit.item.label,
                     commit.item.durationMs,
                     commit.preloaded,
+                    showError = false,
                 )
             } else {
-                addImportedItem(commit.item, commit.preloaded)
+                addImportedItem(commit.item, commit.preloaded, showError = false)
             }
             if (applied) {
                 if (commit.tokenKey != null && commit.saveToken != null) {
@@ -1806,26 +1822,8 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                     missingExistingItem = commit.existingItemId != null && items.none { it.id == commit.existingItemId },
                 )
                 when (disposition) {
-                    FailedSaveDisposition.DELETE_OBSOLETE -> {
-                        finishContourToken(commit.tokenKey, commit.saveToken)
-                        ioExecutor.execute {
-                            deleteMediaFileIfBacked(commit.targetStore, commit.item)
-                            commit.targetStore.clearPendingImport(commit.item.ref)
-                        }
-                    }
-                    FailedSaveDisposition.KEEP_FILE_NOTIFY_FAILURE -> {
-                        if (commit.tokenKey == null || commit.saveToken == null ||
-                            finishContourToken(commit.tokenKey, commit.saveToken)
-                        ) {
-                            commit.existingItemId?.let { clearFinalizingContourPreview(it) }
-                            Toast.makeText(
-                                context,
-                                failureToastForCommit(commit.existingItemId, commit.item),
-                                Toast.LENGTH_LONG,
-                            ).show()
-                        }
-                        commit.targetStore.clearPendingImport(commit.item.ref)
-                    }
+                    FailedSaveDisposition.DELETE_OBSOLETE -> discardObsoleteCommit(commit)
+                    FailedSaveDisposition.KEEP_FILE_NOTIFY_FAILURE -> notifyCommitFailure(commit)
                     FailedSaveDisposition.KEEP_FILE_FLUSH_TO_DISK -> {
                         // Save failed: keep the imported/contour file and offload to the disk queue.
                         flushCommitToDisk(commit)
@@ -3185,8 +3183,13 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
             }
         }
 
-        private fun commitChange(previous: HistorySnapshot, nextStrokes: List<Stroke>, nextItems: List<PaperItem>): Boolean {
-            if (!save(nextStrokes, nextItems)) return false
+        private fun commitChange(
+            previous: HistorySnapshot,
+            nextStrokes: List<Stroke>,
+            nextItems: List<PaperItem>,
+            showError: Boolean = true,
+        ): Boolean {
+            if (!save(nextStrokes, nextItems, showError = showError)) return false
             pushHistory(undoStack, previous)
             redoStack.clear()
             updateHistoryButtons()
@@ -3202,6 +3205,7 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
             nextStrokes: List<Stroke>,
             nextItems: List<PaperItem>,
             allowUnreadable: Boolean = false,
+            showError: Boolean = true,
         ): Boolean {
             if (!readable && !allowUnreadable) return false
             val state = DayState.of(entry.date)
@@ -3232,14 +3236,16 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
                 strokes = persistedStrokes
                 items = persistedItems
                 invalidate()
-                showEntryError(R.string.ink_save_failed, error)
+                showEntryError(R.string.ink_save_failed, error, showToast = showError)
                 return false
             }
         }
 
-        private fun showEntryError(message: Int, error: Exception) {
+        private fun showEntryError(message: Int, error: Exception, showToast: Boolean = true) {
             Log.e("DiaryInk", context.getString(message), error)
-            Toast.makeText(context, message, Toast.LENGTH_LONG).show()
+            if (showToast) {
+                Toast.makeText(context, message, Toast.LENGTH_LONG).show()
+            }
         }
 
         private fun maxOffset() = (sheetHeight - height).coerceAtLeast(0f)

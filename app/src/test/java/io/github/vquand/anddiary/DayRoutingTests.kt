@@ -394,15 +394,24 @@ class DayRoutingTests {
         )
     }
 
+    // --- canQueueOrInsert ---
+
+    @Test
+    fun canQueueOrInsert_allowsLoadingOrReadableOnly() {
+        assertTrue(DayRouting.canQueueOrInsert(loading = true, readable = false))
+        assertTrue(DayRouting.canQueueOrInsert(loading = false, readable = true))
+        assertTrue(DayRouting.canQueueOrInsert(loading = true, readable = true))
+        assertFalse(DayRouting.canQueueOrInsert(loading = false, readable = false))
+    }
+
     // --- shouldReloadOnDiskSync ---
 
     @Test
-    fun diskSync_reloadsWhenRevBumpsAfterSyncOrWhenLoading() {
-        assertFalse(DayRouting.shouldReloadOnDiskSync(loading = false, readable = true, loadedRev = 3L, currentRev = 3L))
-        assertTrue(DayRouting.shouldReloadOnDiskSync(loading = false, readable = true, loadedRev = 3L, currentRev = 4L))
-        assertTrue(DayRouting.shouldReloadOnDiskSync(loading = true, readable = false, loadedRev = 3L, currentRev = 3L))
-        assertTrue(DayRouting.shouldReloadOnDiskSync(loading = true, readable = false, loadedRev = 3L, currentRev = 4L))
-        assertFalse(DayRouting.shouldReloadOnDiskSync(loading = false, readable = false, loadedRev = 3L, currentRev = 4L))
+    fun diskSync_reloadsOnlyWhenReadableAndRevBumped() {
+        assertFalse(DayRouting.shouldReloadOnDiskSync(readable = true, loadedRev = 3L, currentRev = 3L))
+        assertTrue(DayRouting.shouldReloadOnDiskSync(readable = true, loadedRev = 3L, currentRev = 4L))
+        assertFalse(DayRouting.shouldReloadOnDiskSync(readable = false, loadedRev = 3L, currentRev = 3L))
+        assertFalse(DayRouting.shouldReloadOnDiskSync(readable = false, loadedRev = 3L, currentRev = 4L))
     }
 
     // --- clearDay during in-flight load ---
@@ -436,7 +445,6 @@ class DayRoutingTests {
         // Another attached sheet showing the same date sees the bumped diskRev and reloads
         assertTrue(
             DayRouting.shouldReloadOnDiskSync(
-                loading = false,
                 readable = true,
                 loadedRev = revBeforeClear,
                 currentRev = state.diskRev.get(),
