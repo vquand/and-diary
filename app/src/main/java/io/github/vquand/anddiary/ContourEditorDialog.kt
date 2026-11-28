@@ -8,6 +8,7 @@ import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.RectF
 import android.graphics.drawable.GradientDrawable
+import android.os.Build
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.MotionEvent
@@ -520,15 +521,19 @@ private class ContourEditorCanvas(
             MotionEvent.ACTION_UP, MotionEvent.ACTION_POINTER_UP -> {
                 val actionIdx = event.actionIndex
                 if (event.getPointerId(actionIdx) != activePointerId) return true
-                val nx = (event.getX(actionIdx) / width.toFloat()).coerceIn(0f, 1f)
-                val ny = (event.getY(actionIdx) / height.toFloat()).coerceIn(0f, 1f)
-                activePoints.add(nx to ny)
-                val first = activePoints.firstOrNull()
-                val hasMovement = first != null && activePoints.any {
-                    hypot((it.first - first.first).toDouble(), (it.second - first.second).toDouble()) >= 0.008
-                }
-                if (activePoints.size >= 2 && hasMovement) {
-                    onStrokeAdded(ContourStroke(activePoints.toList(), drawLevel))
+                val canceled = Build.VERSION.SDK_INT >= 33 &&
+                    (event.flags and MotionEvent.FLAG_CANCELED) != 0
+                if (!canceled) {
+                    val nx = (event.getX(actionIdx) / width.toFloat()).coerceIn(0f, 1f)
+                    val ny = (event.getY(actionIdx) / height.toFloat()).coerceIn(0f, 1f)
+                    activePoints.add(nx to ny)
+                    val first = activePoints.firstOrNull()
+                    val hasMovement = first != null && activePoints.any {
+                        hypot((it.first - first.first).toDouble(), (it.second - first.second).toDouble()) >= 0.008
+                    }
+                    if (activePoints.size >= 2 && hasMovement) {
+                        onStrokeAdded(ContourStroke(activePoints.toList(), drawLevel))
+                    }
                 }
                 activePoints.clear()
                 activePointerId = MotionEvent.INVALID_POINTER_ID

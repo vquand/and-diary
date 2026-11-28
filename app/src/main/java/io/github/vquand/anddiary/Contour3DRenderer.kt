@@ -208,7 +208,7 @@ internal object Contour3DRenderer {
         }
     }
 
-    private fun sampleCoords(size: Int, step: Int): IntArray {
+    internal fun sampleCoords(size: Int, step: Int): IntArray {
         if (step <= 1) return IntArray(size) { it }
         val list = ArrayList<Int>((size + step - 1) / step + 1)
         var i = 0

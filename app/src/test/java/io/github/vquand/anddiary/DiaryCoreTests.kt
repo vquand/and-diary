@@ -839,4 +839,13 @@ class DiaryCoreTests {
         )
         assertEquals(listOf(1, 2), ContourTerrainEngine.resolveLevels(listOf(innerHill, enclosedArc)))
     }
+
+    @Test
+    fun contour3DRendererSampleCoordsCoversEndpointsAndSteps() {
+        assertArrayEquals(intArrayOf(0, 1), Contour3DRenderer.sampleCoords(size = 2, step = 1))
+        assertArrayEquals(intArrayOf(0, 1), Contour3DRenderer.sampleCoords(size = 2, step = 2))
+        assertArrayEquals(intArrayOf(0, 1, 2, 3), Contour3DRenderer.sampleCoords(size = 4, step = 1))
+        assertArrayEquals(intArrayOf(0, 2, 3), Contour3DRenderer.sampleCoords(size = 4, step = 2))
+        assertArrayEquals(intArrayOf(0, 2, 4), Contour3DRenderer.sampleCoords(size = 5, step = 2))
+    }
 }
