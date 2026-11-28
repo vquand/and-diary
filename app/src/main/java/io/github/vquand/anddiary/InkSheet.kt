@@ -391,6 +391,7 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
     override fun onDetachedFromWindow() {
         attachedSheets.remove(this)
         paper.cancelGesture()
+        paper.cancelPendingHanziPick()
         paper.animate().cancel()
         paper.translationX = 0f
         paper.alpha = 1f
@@ -1164,6 +1165,8 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
         private val finishing = mutableMapOf<InProgressStrokeId, FinishingStroke>()
         var loadSeq = 0L
             private set
+        private var hanziPickSeq = 0L
+        private var hanziPickInFlight = false
         var loading = false
             private set
         val hasContent: Boolean
@@ -1292,6 +1295,7 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
 
         fun startLoad(initial: Boolean = false) {
             val seq = ++loadSeq
+            cancelPendingHanziPick()
             loading = true
             readable = false
             pendingHistoryAction = null
@@ -1592,15 +1596,57 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
             addImportedItem(item)
         }
 
+        fun cancelPendingHanziPick() {
+            hanziPickSeq++
+            hanziPickInFlight = false
+        }
+
         fun addDailyHanzi() {
-            if (!ensureReadableForInsert()) return
-            val words = itemsStore.hanziCatalog.words
-            if (words.isEmpty()) return
-            val used = items.filter { it.kind == PaperItemKind.HANZI }.mapTo(mutableSetOf()) { it.ref }
-            val nextWord = words.firstOrNull { it.char !in used }
-                ?: words[used.size % words.size]
-            val item = itemsStore.createHanzi(nextWord, viewportCenterX(), viewportCenterY(), maxNewItemWidth(), density)
-            addImportedItem(item)
+            if (!ensureReadableForInsert() || hanziPickInFlight) return
+            val capturedStore = itemsStore
+            val capturedDate = currentDate
+            val capturedLoadSeq = loadSeq
+            val capturedClearGen = DayState.of(capturedDate).clearGen.get()
+            val pickSeq = ++hanziPickSeq
+            hanziPickInFlight = true
+            entryWriteExecutor.execute {
+                val words = capturedStore.hanziCatalog.words
+                val history = if (words.isEmpty()) {
+                    HanziHistory()
+                } else {
+                    capturedStore.scanOtherDaysHanziHistory()
+                }
+                mainHandler.post {
+                    if (hanziPickSeq == pickSeq) {
+                        hanziPickInFlight = false
+                    }
+                    if (!isAttachedToWindow ||
+                        isSwitchingDate ||
+                        !readable ||
+                        loading ||
+                        itemsStore !== capturedStore ||
+                        loadSeq != capturedLoadSeq ||
+                        DayState.of(capturedDate).clearGen.get() != capturedClearGen
+                    ) {
+                        return@post
+                    }
+                    val nextWord = HanziWordSelector.pickNextWord(words, items, history) ?: return@post
+                    val item = capturedStore.createHanzi(nextWord, viewportCenterX(), viewportCenterY(), maxNewItemWidth(), density)
+                    if (hasActiveGesture) {
+                        enqueueOrApplyBackgroundCommit(
+                            targetStore = capturedStore,
+                            startGen = capturedClearGen,
+                            existingItemId = null,
+                            item = item,
+                            preloaded = null,
+                            tokenKey = null,
+                            saveToken = null,
+                        )
+                    } else {
+                        addImportedItem(item)
+                    }
+                }
+            }
         }
 
         fun markHanziCompleted(itemId: String, score: Int) {
@@ -3112,6 +3158,7 @@ class InkSheet(context: Context, date: LocalDate) : LinearLayout(context) {
             }
             if (!cleared) return
             loadSeq++
+            cancelPendingHanziPick()
             loading = false
             loadedDiskItemRevision = state.diskRev.get()
             readable = true
