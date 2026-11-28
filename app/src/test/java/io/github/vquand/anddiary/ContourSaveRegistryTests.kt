@@ -65,6 +65,19 @@ class ContourSaveRegistryTests {
         assertTrue(reg.isActive(null, null))
     }
 
+    @Test
+    fun beginWithNullDocClearsPreviousPendingDoc() {
+        val reg = ContourSaveRegistry<String>()
+        val key = day to "item"
+        reg.begin(key, 1L, "old-doc")
+        assertEquals("old-doc", reg.pendingDoc(key))
+
+        reg.begin(key, 2L, null)
+        assertNull(reg.pendingDoc(key))
+        assertFalse(reg.isActive(key, 1L))
+        assertTrue(reg.isActive(key, 2L))
+    }
+
     /** clearDay clears and bumps the generation in one critical section, so an off-sheet merge can never land in between. */
     @Test
     fun clearAndGenerationBumpAreAtomicAgainstMerges() {

@@ -359,4 +359,122 @@ class DayRoutingTests {
         assertEquals(DiskMergeOutcome.DISCARDED, outcome)
         assertTrue(items.isEmpty())
     }
+
+    // --- shouldDrainPendingCommits ---
+
+    @Test
+    fun drainPendingCommits_deferredWhileLoadingOrUnreadableOrActiveGesture() {
+        assertFalse(DayRouting.shouldDrainPendingCommits(hasActiveGesture = false, loading = true, readable = false, queueSize = 1))
+        assertFalse(DayRouting.shouldDrainPendingCommits(hasActiveGesture = false, loading = true, readable = true, queueSize = 1))
+        assertFalse(DayRouting.shouldDrainPendingCommits(hasActiveGesture = false, loading = false, readable = false, queueSize = 1))
+        assertFalse(DayRouting.shouldDrainPendingCommits(hasActiveGesture = true, loading = false, readable = true, queueSize = 1))
+        assertFalse(DayRouting.shouldDrainPendingCommits(hasActiveGesture = false, loading = false, readable = true, queueSize = 0))
+        assertTrue(DayRouting.shouldDrainPendingCommits(hasActiveGesture = false, loading = false, readable = true, queueSize = 1))
+    }
+
+    // --- onCommitSaveFailed ---
+
+    @Test
+    fun commitSaveFailed_neverDeletesFileUnlessExplicitlyObsolete() {
+        assertEquals(
+            FailedSaveDisposition.KEEP_FILE_FLUSH_TO_DISK,
+            DayRouting.onCommitSaveFailed(genValid = true, tokenValid = true, missingExistingItem = false),
+        )
+        assertEquals(
+            FailedSaveDisposition.KEEP_FILE_NOTIFY_FAILURE,
+            DayRouting.onCommitSaveFailed(genValid = true, tokenValid = true, missingExistingItem = true),
+        )
+        assertEquals(
+            FailedSaveDisposition.DELETE_OBSOLETE,
+            DayRouting.onCommitSaveFailed(genValid = false, tokenValid = true, missingExistingItem = false),
+        )
+        assertEquals(
+            FailedSaveDisposition.DELETE_OBSOLETE,
+            DayRouting.onCommitSaveFailed(genValid = true, tokenValid = false, missingExistingItem = false),
+        )
+    }
+
+    // --- shouldReloadOnDiskSync ---
+
+    @Test
+    fun diskSync_reloadsWhenRevBumpsAfterSyncOrWhenLoading() {
+        assertFalse(DayRouting.shouldReloadOnDiskSync(loading = false, readable = true, loadedRev = 3L, currentRev = 3L))
+        assertTrue(DayRouting.shouldReloadOnDiskSync(loading = false, readable = true, loadedRev = 3L, currentRev = 4L))
+        assertTrue(DayRouting.shouldReloadOnDiskSync(loading = true, readable = false, loadedRev = 3L, currentRev = 3L))
+        assertTrue(DayRouting.shouldReloadOnDiskSync(loading = true, readable = false, loadedRev = 3L, currentRev = 4L))
+        assertFalse(DayRouting.shouldReloadOnDiskSync(loading = false, readable = false, loadedRev = 3L, currentRev = 4L))
+    }
+
+    // --- clearDay during in-flight load ---
+
+    @Test
+    fun clearDayDuringInFlightLoad_dropsStaleLoadResultAndReloadsOtherSheet() {
+        val state = DayState.of(LocalDate.of(2026, 11, 28))
+        val inFlightSeq = 1L
+        val revBeforeClear = state.diskRev.get()
+        val startGenBeforeClear = state.clearGen.get()
+
+        // clearDay succeeds: bumps clearGen and diskRev under lock, and bumps sheet loadSeq
+        if (DayRouting.shouldBumpClearGen(true)) {
+            state.clearGen.incrementAndGet()
+            state.diskRev.incrementAndGet()
+        }
+        val currentSeqAfterClear = inFlightSeq + 1L
+
+        // In-flight load on the clearing sheet is dropped (IGNORE)
+        assertEquals(
+            LoadDecision.IGNORE,
+            DayRouting.acceptLoadResult(
+                resultSeq = inFlightSeq,
+                currentSeq = currentSeqAfterClear,
+                sameDateAndStore = true,
+                loadedRev = revBeforeClear,
+                currentRev = state.diskRev.get(),
+            ),
+        )
+
+        // Another attached sheet showing the same date sees the bumped diskRev and reloads
+        assertTrue(
+            DayRouting.shouldReloadOnDiskSync(
+                loading = false,
+                readable = true,
+                loadedRev = revBeforeClear,
+                currentRev = state.diskRev.get(),
+            ),
+        )
+
+        // Any queued commit from before clearDay is discarded on startGen mismatch
+        assertEquals(
+            CommitRoute.DISCARD,
+            DayRouting.routeCommit(
+                genValid = state.clearGen.get() == startGenBeforeClear,
+                tokenValid = true,
+                sheetShowsDate = true,
+                sheetLoading = false,
+                sheetReadable = true,
+            ),
+        )
+    }
+
+    // --- historyActionWhileFinishing ---
+
+    @Test
+    fun finishingStroke_queuesUndoAndDropsRedo() {
+        assertEquals(
+            FinishingHistoryAction.EXECUTE_NOW,
+            DayRouting.historyActionWhileFinishing(isRedo = false, hasFinishingOnCurrentDate = false),
+        )
+        assertEquals(
+            FinishingHistoryAction.EXECUTE_NOW,
+            DayRouting.historyActionWhileFinishing(isRedo = true, hasFinishingOnCurrentDate = false),
+        )
+        assertEquals(
+            FinishingHistoryAction.QUEUE_FOR_FINISH,
+            DayRouting.historyActionWhileFinishing(isRedo = false, hasFinishingOnCurrentDate = true),
+        )
+        assertEquals(
+            FinishingHistoryAction.DROP,
+            DayRouting.historyActionWhileFinishing(isRedo = true, hasFinishingOnCurrentDate = true),
+        )
+    }
 }

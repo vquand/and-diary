@@ -21,6 +21,18 @@ internal enum class DiskMergeOutcome {
     DISCARDED,
 }
 
+internal enum class FailedSaveDisposition {
+    DELETE_OBSOLETE,
+    KEEP_FILE_FLUSH_TO_DISK,
+    KEEP_FILE_NOTIFY_FAILURE,
+}
+
+internal enum class FinishingHistoryAction {
+    EXECUTE_NOW,
+    QUEUE_FOR_FINISH,
+    DROP,
+}
+
 internal object DayRouting {
     fun routeCommit(
         genValid: Boolean,
@@ -49,6 +61,39 @@ internal object DayRouting {
     }
 
     fun shouldBumpClearGen(clearSucceeded: Boolean): Boolean = clearSucceeded
+
+    fun shouldDrainPendingCommits(
+        hasActiveGesture: Boolean,
+        loading: Boolean,
+        readable: Boolean,
+        queueSize: Int,
+    ): Boolean = !hasActiveGesture && !loading && readable && queueSize > 0
+
+    fun shouldReloadOnDiskSync(
+        loading: Boolean,
+        readable: Boolean,
+        loadedRev: Long,
+        currentRev: Long,
+    ): Boolean = loading || (readable && currentRev != loadedRev)
+
+    fun onCommitSaveFailed(
+        genValid: Boolean,
+        tokenValid: Boolean,
+        missingExistingItem: Boolean = false,
+    ): FailedSaveDisposition {
+        if (!genValid || !tokenValid) return FailedSaveDisposition.DELETE_OBSOLETE
+        if (missingExistingItem) return FailedSaveDisposition.KEEP_FILE_NOTIFY_FAILURE
+        return FailedSaveDisposition.KEEP_FILE_FLUSH_TO_DISK
+    }
+
+    fun historyActionWhileFinishing(
+        isRedo: Boolean,
+        hasFinishingOnCurrentDate: Boolean,
+    ): FinishingHistoryAction = when {
+        !hasFinishingOnCurrentDate -> FinishingHistoryAction.EXECUTE_NOW
+        isRedo -> FinishingHistoryAction.DROP
+        else -> FinishingHistoryAction.QUEUE_FOR_FINISH
+    }
 
     fun mergeItemToDiskUnderLock(
         state: DayState,

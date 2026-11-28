@@ -392,6 +392,7 @@ internal object LassoGeometry {
         density: Float,
         minLeft: Float = Float.NEGATIVE_INFINITY,
         minInlineLeft: Float = Float.NEGATIVE_INFINITY,
+        minTop: Float = 4f * density,
     ): DeleteConfirmPillBounds {
         val pillW = 80f * density
         val pillH = 30f * density
@@ -406,7 +407,7 @@ internal object LassoGeometry {
                 right = left + pillW
             }
             val liftY = boxTop - 28f * density
-            if (liftY - pillH / 2f >= 4f * density) liftY else boxTop + 28f * density
+            if (liftY - pillH / 2f >= minTop) liftY else boxTop + 28f * density
         } else {
             if (left < minLeft) {
                 left = boxRight + gapFromClose

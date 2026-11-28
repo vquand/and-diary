@@ -313,6 +313,7 @@ internal class PaperItemRenderer(
         item: PaperItem,
         showCornerHandles: Boolean = true,
         confirmingDelete: Boolean = false,
+        viewportOffset: Float = 0f,
     ) {
         val rotated = item.rotation != 0f
         val saveCount = if (rotated) {
@@ -333,6 +334,7 @@ internal class PaperItemRenderer(
                 allowEdit = item.kind == PaperItemKind.CONTOUR,
                 confirmingDelete = confirmingDelete,
                 minPillLeft = if (rotated) Float.NEGATIVE_INFINITY else 4f * density,
+                minPillTop = if (rotated) Float.NEGATIVE_INFINITY else viewportOffset + 4f * density,
             )
         }
         if (rotated) {
@@ -345,6 +347,7 @@ internal class PaperItemRenderer(
         bounds: RectF,
         allowResize: Boolean,
         confirmingDelete: Boolean = false,
+        viewportOffset: Float = 0f,
     ) {
         val pad = 6f * density
         rect.set(bounds.left - pad, bounds.top - pad, bounds.right + pad, bounds.bottom + pad)
@@ -356,6 +359,7 @@ internal class PaperItemRenderer(
             allowResize = allowResize,
             confirmingDelete = confirmingDelete,
             minPillLeft = 4f * density,
+            minPillTop = viewportOffset + 4f * density,
         )
     }
 
@@ -366,6 +370,7 @@ internal class PaperItemRenderer(
         allowEdit: Boolean = false,
         confirmingDelete: Boolean = false,
         minPillLeft: Float = 4f * density,
+        minPillTop: Float = 4f * density,
     ) {
         val handleR = 12f * density
         if (allowEdit) {
@@ -381,7 +386,7 @@ internal class PaperItemRenderer(
 
         if (confirmingDelete) {
             val minInlineLeft = if (allowEdit) box.left + 20f * density else Float.NEGATIVE_INFINITY
-            val pill = LassoGeometry.deleteConfirmPillBounds(box.right, box.top, density, minPillLeft, minInlineLeft)
+            val pill = LassoGeometry.deleteConfirmPillBounds(box.right, box.top, density, minPillLeft, minInlineLeft, minPillTop)
             val pillRadius = (pill.bottom - pill.top) / 2f
             val pillCenterY = (pill.top + pill.bottom) / 2f
             pillRect.set(pill.left, pill.top, pill.right, pill.bottom)
@@ -395,16 +400,12 @@ internal class PaperItemRenderer(
             canvas.drawRect(pill.splitX, pill.top, pill.right, pill.bottom, badgeFill)
             canvas.restoreToCount(clipSave)
 
-            val prevStrokeColor = cardStroke.color
-            val prevStrokeWidth = cardStroke.strokeWidth
-            cardStroke.color = paperPalette.rule
-            cardStroke.strokeWidth = 1f * density
-            canvas.drawLine(pill.splitX, pill.top + 4f * density, pill.splitX, pill.bottom - 4f * density, cardStroke)
-            cardStroke.color = paperPalette.danger
-            cardStroke.strokeWidth = 1.5f * density
-            canvas.drawRoundRect(pillRect, pillRadius, pillRadius, cardStroke)
-            cardStroke.color = prevStrokeColor
-            cardStroke.strokeWidth = prevStrokeWidth
+            withCardStroke(paperPalette.rule, 1f * density) {
+                canvas.drawLine(pill.splitX, pill.top + 4f * density, pill.splitX, pill.bottom - 4f * density, cardStroke)
+            }
+            withCardStroke(paperPalette.danger, 1.5f * density) {
+                canvas.drawRoundRect(pillRect, pillRadius, pillRadius, cardStroke)
+            }
 
             drawCheckIcon(canvas, (pill.left + pill.splitX) / 2f, pillCenterY, paperPalette.paper)
             drawCrossIcon(canvas, (pill.splitX + pill.right) / 2f, pillCenterY, paperPalette.text)

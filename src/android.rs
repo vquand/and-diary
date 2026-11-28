@@ -24,10 +24,14 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     path::PathBuf,
     rc::Rc,
-    sync::Mutex,
+    sync::{
+        Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 static PENDING_DATE: Mutex<Option<NaiveDate>> = Mutex::new(None);
+static PENDING_DAYS_REFRESH: AtomicBool = AtomicBool::new(false);
 
 fn clear_pending_date() {
     if let Ok(mut pending) = PENDING_DATE.lock() {
@@ -122,6 +126,7 @@ impl Diary {
 
     fn calendar(&mut self, cx: &mut Context<Self>) {
         clear_pending_date();
+        PENDING_DAYS_REFRESH.store(false, Ordering::Release);
         self.entry = None;
         self.return_date = None;
         self.show_settings = false;
@@ -146,6 +151,7 @@ impl Diary {
     }
 
     fn navigate_day(&mut self, date: NaiveDate, cx: &mut Context<Self>) {
+        clear_pending_date();
         if let Some(entry) = &mut self.entry {
             if entry.date == date {
                 return;
@@ -215,6 +221,13 @@ impl Render for Diary {
             && let Some(entry) = &mut self.entry
         {
             entry.date = synced;
+        }
+        if self.entry.is_none()
+            && !self.show_settings
+            && PENDING_DAYS_REFRESH.swap(false, Ordering::AcqRel)
+        {
+            self.saved_days = Rc::new(calendar::saved_days(&self.directory));
+            self.hanzi_days = Rc::new(calendar::completed_hanzi_days(&self.directory));
         }
 
         let [left, top, right, bottom] = android_jni::platform()
@@ -768,6 +781,17 @@ pub extern "system" fn Java_io_github_vquand_anddiary_DiaryActivity_nativeOnDate
         {
             window.request_frame();
         }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_io_github_vquand_anddiary_DiaryActivity_nativeOnDayWritten(
+    _env: jni::EnvUnowned<'_>,
+    _class: jni::objects::JClass<'_>,
+) {
+    PENDING_DAYS_REFRESH.store(true, Ordering::Release);
+    if let Some(window) = android_jni::platform().and_then(|platform| platform.primary_window()) {
+        window.request_frame();
     }
 }
 

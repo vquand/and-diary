@@ -986,5 +986,29 @@ class DiaryCoreTests {
             minInlineLeft = boxLeft + 20f * density,
         )
         assertTrue(dropped.top > 10f + 12f * density)
+
+        // When scrolled (offset > 0), minTop tracks the viewport top rather than page y = 0.
+        val scrollOffset = 500f
+        val boxTopScrolled = scrollOffset + 10f
+        val droppedWhenScrolled = LassoGeometry.deleteConfirmPillBounds(
+            boxRight = 260f,
+            boxTop = boxTopScrolled,
+            density = density,
+            minLeft = 4f * density,
+            minInlineLeft = boxLeft + 20f * density,
+            minTop = scrollOffset + 4f * density,
+        )
+        assertTrue(droppedWhenScrolled.top > boxTopScrolled + 12f * density)
+
+        // Rotated items pass minTop = -Infinity so lifting is not suppressed by scroll offset.
+        val liftedRotated = LassoGeometry.deleteConfirmPillBounds(
+            boxRight = 260f,
+            boxTop = boxTopScrolled,
+            density = density,
+            minLeft = Float.NEGATIVE_INFINITY,
+            minInlineLeft = boxLeft + 20f * density,
+            minTop = Float.NEGATIVE_INFINITY,
+        )
+        assertTrue(liftedRotated.bottom < boxTopScrolled - 12f * density)
     }
 }

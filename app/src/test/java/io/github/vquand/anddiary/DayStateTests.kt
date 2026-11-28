@@ -91,8 +91,8 @@ class DayStateTests {
                         state.lock.withLock {
                             state.protect(ref)
                             dir.mkdirs()
-                            file.writeText("payload-$iteration")
                         }
+                        file.writeText("payload-$iteration")
                     } catch (t: Throwable) {
                         threadError = t
                     } finally {
